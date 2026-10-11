@@ -22,6 +22,9 @@ import {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const extensionDir = path.join(root, 'extension');
 
+/** The Chrome Web Store gives its copy of the extension an id of its own; the bridge accepts both. */
+export const STORE_EXTENSION_ID = 'gcpbhianocgipfljeephofdmbpahkmei';
+
 /** Chrome derives an unpacked extension's id from the public key in its manifest. */
 export function extensionId() {
   const { key } = JSON.parse(fs.readFileSync(path.join(extensionDir, 'manifest.json'), 'utf8'));
@@ -106,7 +109,7 @@ export async function install({ browser = 'chrome', userDataDir } = {}) {
     description: 'Tabhand bridge between AI agents and Chrome',
     path: hostLauncherPath(),
     type: 'stdio',
-    allowed_origins: [`chrome-extension://${extensionId()}/`],
+    allowed_origins: [...new Set([extensionId(), STORE_EXTENSION_ID])].map((id) => `chrome-extension://${id}/`),
   };
   const written = [];
   for (const dir of targetDirs({ browser, userDataDir })) {

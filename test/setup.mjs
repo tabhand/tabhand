@@ -65,7 +65,11 @@ try {
 
   check('installs its own copy, with a launcher', fs.statSync(launcher).mode & 0o100 && fs.existsSync(at('.tabhand', 'extension', 'manifest.json')));
   const host = json(at('Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts', 'dev.tabhand.bridge.json'));
-  check('registers the bridge with Chrome', host.path === at('.tabhand', 'bin', 'tabhand-host'), host.path);
+  check(
+    'registers the bridge with Chrome, for the unpacked and the Chrome Web Store extension',
+    host.path === at('.tabhand', 'bin', 'tabhand-host') && host.allowed_origins.length === 2,
+    host.allowed_origins.join(' '),
+  );
 
   const claude = json(files.claude);
   check(
