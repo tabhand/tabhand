@@ -1,6 +1,6 @@
 # Chrome Web Store listing
 
-What goes into each field of the Chrome Web Store developer dashboard, kept here so updates stay consistent. The images in this folder are the listing's: `icon-128.png` (store icon), `screenshot-1..3.png` (1280×800), `promo-small.png` (small promo tile, 440×280).
+What goes into each field of the Chrome Web Store developer dashboard, kept here so updates stay consistent. The images in this folder are the listing's: `icon-128.png` (store icon), `screenshot-1..3.png` (1280×800), `promo-small.png` (small promo tile, 440×280), `marquee-promo.jpg` (marquee promo tile, 1400×560).
 
 The package is `extension/`, zipped with the manifest's `key` removed (the store assigns its own ID).
 
