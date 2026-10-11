@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Tabhand",
+  "version": "0.7.1",
+  "description": "Lets AI agents work in background tabs of your Chrome without stealing focus.",
+  "minimum_chrome_version": "125",
+  "permissions": [
+    "debugger",
+    "nativeMessaging",
+    "tabGroups",
+    "storage",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Tabhand"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArsnjw9V3SC1AvgwbjS0bm4BOusN/yWOuIWiLTqk1T6fD+Y+ppWSpKu7v7ownsdxsxshVyyc8+mxd3RHfWMU5W6q0kwqIkCaqf97CLP8TRq4+PYeKa9QqXo05NsHhn8ugMdcWQs0L8v1k5ZDUR0YU66c6uyEFyFJV97FazojxIoHb+/K8xoEsCUuBx2LYzu13AcbQvtIrWmFR8ANJK6CUooKrhQi8JNDQqX1yCN9RvfN3VVj/iS+ZwUrI+H0HK6k4I+QifchAKALEu43uUpZ1IZiSavkz8Ir9r6dpXGVVAaRNUGBo/3jbaPXZCyaVyFMc919q19cD1UFVJF/Li8X0LwIDAQAB"
+}

@@ -1,0 +1,95 @@
+// Connection from an agent session (the MCP server) to the native host's Unix socket.
+
+import fs from 'node:fs';
+import net from 'node:net';
+import { socketPath, tokenPath } from './paths.mjs';
+
+export const NOT_CONNECTED =
+  'Tabhand cannot reach Chrome. Ask the user to open Chrome and check that the Tabhand extension is installed and enabled (`tabhand status` shows the setup).';
+
+export class BridgeClient {
+  /** @param {{sessionId: string, label: string, theme?: string}} options */
+  constructor({ sessionId, label, theme = 'agent' }) {
+    this.sessionId = sessionId;
+    this.label = label;
+    this.theme = theme;
+    /** @type {net.Socket | null} */
+    this.socket = null;
+    /** @type {Promise<void> | null} */
+    this.connecting = null;
+    this.pending = new Map();
+    this.nextId = 1;
+  }
+
+  connect() {
+    if (this.socket && !this.socket.destroyed) return Promise.resolve();
+    if (this.connecting) return this.connecting;
+    this.connecting = new Promise((resolve, reject) => {
+      let token;
+      try {
+        token = fs.readFileSync(tokenPath(), 'utf8').trim();
+      } catch {
+        reject(new Error(NOT_CONNECTED));
+        return;
+      }
+      const socket = net.connect(socketPath());
+      let buffer = '';
+      let welcomed = false;
+      socket.setEncoding('utf8');
+      socket.once('connect', () => {
+        socket.write(JSON.stringify({ type: 'hello', token, sessionId: this.sessionId, label: this.label, theme: this.theme }) + '\n');
+      });
+      socket.on('data', (data) => {
+        buffer += data;
+        let index;
+        while ((index = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, index);
+          buffer = buffer.slice(index + 1);
+          let message;
+          try {
+            message = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (message.type === 'welcome') {
+            welcomed = true;
+            this.socket = socket;
+            resolve();
+          } else if (message.type === 'error') {
+            reject(new Error(`Tabhand refused the connection: ${message.error}`));
+          } else if (message.type === 'response') {
+            const entry = this.pending.get(message.id);
+            if (!entry) continue;
+            this.pending.delete(message.id);
+            if (message.ok) entry.resolve(message.result);
+            else entry.reject(new Error(message.error || 'Unknown error'));
+          }
+        }
+      });
+      socket.on('error', () => {});
+      socket.on('close', () => {
+        if (!welcomed) reject(new Error(NOT_CONNECTED));
+        if (this.socket === socket) this.socket = null;
+        for (const entry of this.pending.values()) entry.reject(new Error('Lost the connection to Chrome. Try again.'));
+        this.pending.clear();
+      });
+    }).finally(() => {
+      this.connecting = null;
+    });
+    return this.connecting;
+  }
+
+  /** Sends one command to the extension and resolves with its result. */
+  async request(cmd, params = {}) {
+    await this.connect();
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.socket.write(JSON.stringify({ type: 'request', id, cmd, params }) + '\n');
+    });
+  }
+
+  close() {
+    this.socket?.destroy();
+  }
+}

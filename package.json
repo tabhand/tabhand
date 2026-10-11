@@ -1,0 +1,52 @@
+{
+  "name": "tabhand",
+  "version": "0.7.1",
+  "description": "Let your AI agents (Claude Code, Codex, Cursor, OpenCode and more) use your own signed-in Chrome, in background tabs that never steal focus.",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "browser",
+    "chrome",
+    "browser-automation",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "cursor",
+    "opencode"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tabhand/tabhand.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tabhand/tabhand/issues"
+  },
+  "homepage": "https://github.com/tabhand/tabhand#readme",
+  "bin": {
+    "tabhand": "dist/tabhand.mjs"
+  },
+  "files": [
+    "dist",
+    "extension",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/build.mjs",
+    "test": "node test/setup.mjs && node test/e2e.mjs && node test/new-tabs.mjs && node test/cursor-presence.mjs && node test/foreign-frames.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "test:smoke": "node test/smoke.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12",
+    "jsonc-parser": "^3.3.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^3.25.0"
+  }
+}

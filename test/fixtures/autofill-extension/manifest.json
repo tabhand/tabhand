@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Tabhand test: autofill menu",
+  "version": "1.0",
+  "description": "Behaves like a password manager's autofill menu, for test/foreign-frames.mjs.",
+  "content_scripts": [{ "matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle" }],
+  "web_accessible_resources": [{ "resources": ["menu.html"], "matches": ["<all_urls>"] }]
+}
