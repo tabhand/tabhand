@@ -1,6 +1,6 @@
 {
   "name": "tabhand",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Let your AI agents (Claude Code, Codex, Cursor, OpenCode and more) use your own signed-in Chrome, in background tabs that never steal focus.",
   "keywords": [
     "mcp",
