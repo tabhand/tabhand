@@ -1,8 +1,41 @@
-# Tabhand
+<p align="center">
+  <img src="docs/icon.svg" width="88" height="88" alt="">
+</p>
 
-> Early release, for macOS and Google Chrome.
+<h1 align="center">Tabhand</h1>
 
-Let any AI agent (Claude Code, Codex, Cursor, or anything else that speaks MCP) use your real, logged-in Chrome in background tabs. You keep working: Chrome never jumps to the front, and agents never touch your own tabs.
+<p align="center">
+  Let your AI agents use your own Chrome, signed in to your accounts,<br>
+  in background tabs that never steal your focus.
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/tabhand"><img src="https://img.shields.io/npm/v/tabhand?color=7c3aed&label=npm" alt="npm version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/macOS-Google%20Chrome-4b5563" alt="macOS and Google Chrome">
+</p>
+
+<p align="center">
+  <img src="docs/cursors.jpg" width="820" alt="Each agent gets its own cursor: Claude, Codex, OpenCode, Cursor, Gemini, Copilot">
+</p>
+
+```sh
+npx tabhand setup
+```
+
+Works with Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Copilot and more: [19 agents](#setup-macos-google-chrome) in all, plus anything else that speaks MCP.
+
+## Why Tabhand
+
+- **Your logins, not a blank browser.** Agents work in the Chrome you already use, so email, dashboards and admin panels just work. You never hand over a password.
+- **You keep working.** Every agent gets tabs of its own in the background, grouped under its name and muted. Chrome never jumps to the front.
+- **Your tabs stay yours.** An agent can only reach the tabs it opened, never yours and never another agent's.
+- **You can watch.** Each agent has its own cursor that glides, clicks and types, and its tabs wear its icon. Click the toolbar button to pause every agent at once.
+- **No servers.** Tabhand runs entirely on your computer, with no analytics. Pages only go to the agent you're running. Read the [privacy policy](PRIVACY.md).
+
+<p align="center">
+  <img src="docs/agent-at-work.jpg" width="720" alt="Claude's cursor working on a Wikipedia page in a background tab">
+</p>
 
 ## How it works
 
@@ -19,8 +52,6 @@ agent ──stdio──▶ tabhand mcp ──Unix socket──▶ native host �
 - **Agent tabs stand out.** While an agent works in a tab, the tab's icon becomes the agent's arrow. The site's own icon comes back when the agent is done.
 - **Each agent wears its own colors.** Claude, Codex, OpenCode, Cursor, Gemini and Copilot each get their own cursor and tab group color; anything else gets a violet cursor with its own name. Override with `tabhand mcp --label <name> --theme <theme>`.
 - **Stop button.** Click the toolbar icon, or Cancel on Chrome's "started debugging" bar, to pause every agent at once.
-
-![Agent cursors for each harness](docs/cursors.jpg)
 
 ![Tab badges for each harness](docs/tab-badges.jpg)
 
@@ -94,7 +125,7 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - Confirmation before sending, buying or deleting
 - Logins filled from your password manager without the AI seeing the password
 - Downloads, dialogs and iframes
-- Windows and Linux, Chrome Web Store listing
+- Windows and Linux
 
 ## License
 
