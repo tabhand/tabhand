@@ -129,7 +129,28 @@ async function detachIdleTabs() {
   }
 }
 
+/** Steps waiting for a debugger event from a tab (see waitForEvent) */
+const eventWaiters = new Set();
+
+/** Resolves with the event's params, or null after timeoutMs. */
+function waitForEvent(tabId, method, timeoutMs) {
+  return new Promise((resolve) => {
+    const waiter = { tabId, method, resolve };
+    eventWaiters.add(waiter);
+    setTimeout(() => {
+      eventWaiters.delete(waiter);
+      resolve(null);
+    }, timeoutMs);
+  });
+}
+
 chrome.debugger.onEvent.addListener((source, method, params) => {
+  for (const waiter of eventWaiters) {
+    if (waiter.tabId === source.tabId && waiter.method === method) {
+      eventWaiters.delete(waiter);
+      waiter.resolve(params);
+    }
+  }
   if (method === 'Page.windowOpen') expectedOpens.push({ openerTabId: source.tabId, at: Date.now() });
   // A new page has no cursor yet: put it back where the agent left it.
   if (method === 'Page.domContentEventFired') void presentCursor(source.tabId);
@@ -821,6 +842,60 @@ async function opensNewTab(tabId, backendNodeId) {
   }
 }
 
+/** A left click at x, y, as the user would make it. */
+async function pressAt(tabId, x, y, modifiers = 0) {
+  await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  const press = { x, y, button: 'left', clickCount: 1, modifiers };
+  // A press cut short by a password manager's menu went through: its focus is what brought it up.
+  await send(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...press }).catch((error) => {
+    if (!(error instanceof Interrupted)) throw error;
+  });
+  await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...press });
+}
+
+/** uploadId -> the session sending it and each file's base64 pieces, until upload_files */
+const uploads = new Map();
+
+async function isFileField(tabId, backendNodeId) {
+  const { node } = await send(tabId, 'DOM.describeNode', { backendNodeId });
+  const attributes = node.attributes ?? [];
+  const type = attributes[attributes.indexOf('type') + 1];
+  return node.nodeName === 'INPUT' && attributes.includes('type') && type?.toLowerCase() === 'file';
+}
+
+/** Clicks something that opens a file picker, with the picker intercepted; returns its field. */
+async function fileFieldFromPicker(tabId, sessionId, backendNodeId) {
+  await send(tabId, 'Page.setInterceptFileChooserDialog', { enabled: true });
+  try {
+    const opened = waitForEvent(tabId, 'Page.fileChooserOpened', 5_000);
+    const { x, y } = await elementCenter(tabId, backendNodeId);
+    await showCursor(tabId, sessionId, x, y, { click: true });
+    await pressAt(tabId, x, y);
+    const chooser = await opened;
+    if (!chooser?.backendNodeId) {
+      throw new Error("Clicking that didn't open a file picker. Pass the ref of the file field, or of the button that opens the picker.");
+    }
+    return chooser.backendNodeId;
+  } finally {
+    await send(tabId, 'Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {});
+  }
+}
+
+/** Runs on the file field in the page: hands it the files as if the user had picked them. */
+const ATTACH_FILES = `function (files) {
+  if (files.length > 1 && !this.multiple) throw new Error('That field takes one file at a time.');
+  const transfer = new DataTransfer();
+  for (const { name, type, base64 } of files) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    transfer.items.add(new File([bytes], name, { type }));
+  }
+  this.files = transfer.files;
+  this.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+  this.dispatchEvent(new Event('change', { bubbles: true }));
+}`;
+
 function refToNodeId(ref) {
   const match = /^e(\d+)$/.exec(String(ref ?? '').trim());
   if (!match) throw new Error(`"${ref}" is not a ref from browser_snapshot (they look like e123).`);
@@ -959,13 +1034,39 @@ const handlers = {
     if (newTab) expectedOpens.push({ openerTabId: tabId, at: Date.now() });
     const modifiers = newTab ? await backgroundTabModifier : 0;
     const settle = watchNavigation(tabId);
-    await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-    const press = { x, y, button: 'left', clickCount: 1, modifiers };
-    // A press cut short by a password manager's menu went through: its focus is what brought it up.
-    await send(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...press }).catch((error) => {
-      if (!(error instanceof Interrupted)) throw error;
+    await pressAt(tabId, x, y, modifiers);
+    const navigated = await settle();
+    return { ...(await describe(tabId)), navigated, opened: await takeOpened(tabId) };
+  },
+
+  // Files arrive in pieces: messages to an extension are capped at 1 MB.
+  async upload_part(sessionId, _label, { uploadId, file, data }) {
+    for (const [id, upload] of uploads) if (Date.now() - upload.at > 10 * 60_000) uploads.delete(id);
+    const upload = uploads.get(uploadId) ?? { sessionId, at: Date.now(), files: [] };
+    if (upload.sessionId !== sessionId) throw new Error('Unknown upload.');
+    (upload.files[file] ??= []).push(data);
+    uploads.set(uploadId, upload);
+    return {};
+  },
+
+  async upload_files(sessionId, _label, { tabId, ref, uploadId, files }) {
+    const upload = uploads.get(uploadId);
+    uploads.delete(uploadId);
+    if (upload && upload.sessionId !== sessionId) throw new Error('Unknown upload.');
+    await ownedTab(sessionId, tabId);
+    const backendNodeId = refToNodeId(ref);
+    const settle = watchNavigation(tabId);
+    // A file field takes the files directly. Anything else is a button that opens a file picker:
+    // click it with the picker intercepted (no system dialog) and use the field it was for.
+    const field = (await isFileField(tabId, backendNodeId)) ? backendNodeId : await fileFieldFromPicker(tabId, sessionId, backendNodeId);
+    const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId: field });
+    const payload = files.map((file, index) => ({ ...file, base64: (upload?.files[index] ?? []).join('') }));
+    const { exceptionDetails } = await send(tabId, 'Runtime.callFunctionOn', {
+      objectId: object.objectId,
+      functionDeclaration: ATTACH_FILES,
+      arguments: [{ value: payload }],
     });
-    await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...press });
+    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split('\n')[0] ?? exceptionDetails.text);
     const navigated = await settle();
     return { ...(await describe(tabId)), navigated, opened: await takeOpened(tabId) };
   },

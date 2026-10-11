@@ -2,6 +2,8 @@
 // own background tabs and its own tab group, and cannot see or touch any other tabs.
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -30,6 +32,16 @@ How it works:
 - Close your tabs with browser_close_tab when you're done.
 
 You act as the user, with their accounts: ask before sending messages, posting, buying, deleting or changing settings. If a tool says Chrome isn't connected, ask the user to open Chrome and make sure the Tabhand extension is turned on.`;
+
+// Files travel to the extension in pieces, since messages to an extension are capped at 1 MB.
+const UPLOAD_PIECE = 512 * 1024;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MIME_TYPES = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+  pdf: 'application/pdf', zip: 'application/zip', json: 'application/json', txt: 'text/plain', csv: 'text/csv',
+  md: 'text/markdown', html: 'text/html', mp4: 'video/mp4', mov: 'video/quicktime', mp3: 'audio/mpeg',
+};
+const mimeType = (file) => MIME_TYPES[path.extname(file).slice(1).toLowerCase()] ?? 'application/octet-stream';
 
 export async function runMcpServer({ label, theme } = {}) {
   const server = new McpServer({ name: 'tabhand', version: VERSION }, { instructions: INSTRUCTIONS });
@@ -149,6 +161,34 @@ export async function runMcpServer({ label, theme } = {}) {
       return text(tabs.length ? tabs.map(tabLine).join('\n') : 'No open tabs in this session.');
     },
     { readOnlyHint: true },
+  );
+
+  tool(
+    'browser_upload_file',
+    'Attach files from this computer to the page, as if the user picked them. Pass the ref of a file field, or of the button that opens a file picker (no system dialog appears).',
+    {
+      tabId,
+      ref: z.string().describe('Ref of the file field, or of the button that opens the file picker.'),
+      paths: z.array(z.string()).min(1).describe('Files to attach: absolute paths, or relative to the directory you run in.'),
+    },
+    async ({ tabId, ref, paths }) => {
+      const uploadId = crypto.randomUUID();
+      const files = [];
+      let total = 0;
+      for (const [index, file] of paths.entries()) {
+        const full = path.resolve(file);
+        const data = fs.readFileSync(full);
+        total += data.length;
+        if (total > MAX_UPLOAD_BYTES) throw new Error(`That's more than ${MAX_UPLOAD_BYTES / 1024 / 1024} MB of files.`);
+        const base64 = data.toString('base64');
+        for (let at = 0; at < base64.length; at += UPLOAD_PIECE) {
+          await call('upload_part', { uploadId, file: index, data: base64.slice(at, at + UPLOAD_PIECE) });
+        }
+        files.push({ name: path.basename(full), type: mimeType(full) });
+      }
+      const result = await call('upload_files', { tabId, ref, uploadId, files });
+      return text(`Attached ${files.map((file) => file.name).join(', ')}.${navigatedNote(result)}`);
+    },
   );
 
   tool(

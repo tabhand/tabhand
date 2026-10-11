@@ -62,7 +62,7 @@ try {
   await client.close();
   check(
     'agents reach the MCP server through the launcher, even with the package gone',
-    tools.length === 10 && server.version === JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version && instructions.length > 0,
+    ['browser_open_tab', 'browser_snapshot', 'browser_upload_file'].every((name) => tools.some((tool) => tool.name === name)) && server.version === JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version && instructions.length > 0,
     `${server.name} ${server.version}, ${tools.length} tools`,
   );
 } catch (error) {

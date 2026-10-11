@@ -69,6 +69,7 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 | `browser_type` | Type into a field, optionally clearing it first and pressing Enter after |
 | `browser_press_key` | Press a key or combination such as `Shift+Tab` |
 | `browser_scroll` | Scroll up or down |
+| `browser_upload_file` | Attach files from your computer to a file field, or through the button that opens a file picker (no system dialog appears) |
 | `browser_screenshot` | Screenshot a tab, even in the background |
 | `browser_list_tabs` | List the session's tabs |
 | `browser_close_tab` | Close one of the session's tabs |
@@ -80,6 +81,7 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - `node test/package.mjs` packs the npm package, installs the tarball, and runs setup from it.
 - `npm run test:e2e` launches a throwaway Chrome for Testing profile, runs two agents in parallel, and checks they can't reach each other's tabs and that the browser never comes to the front.
 - `node test/new-tabs.mjs` checks that links, `window.open()` and popups from an agent's tab never take over your tab, and that the agent gets the new tab.
+- `node test/upload.mjs` checks that files reach a page byte for byte, through a file field or a button's file picker, including files over Chrome's 1 MB message cap.
 - `node test/foreign-frames.mjs` checks that an agent gets through pages where a password manager's autofill menu pops up, using a stand-in extension.
 - `npm run test:smoke` runs a short check against the Chrome you have open.
 - `node test/cursor-presence.mjs` checks the cursor and tab badge show before the first action, survive page loads, and leave when the agent is done.
@@ -91,7 +93,7 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - Per-site approval: agents ask before using a site for the first time
 - Confirmation before sending, buying or deleting
 - Logins filled from your password manager without the AI seeing the password
-- File uploads, downloads, dialogs and iframes
+- Downloads, dialogs and iframes
 - Windows and Linux, Chrome Web Store listing
 
 ## License
