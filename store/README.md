@@ -11,19 +11,18 @@ The package is `extension/`, zipped with the manifest's `key` removed (the store
 **Description:**
 
 ```
-Tabhand lets the AI agents you already use (Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Copilot and more) work in your own Chrome, where you're already signed in.
+Tabhand lets AI coding agents like Claude Code, Codex, Cursor and OpenCode use your Chrome, with the logins you already have.
 
-• Background tabs. Each agent works in tabs of its own, grouped and muted. Chrome never jumps to the front, so you keep working.
-• Your logins. Agents use the sites you're signed in to; you never hand over a password.
-• Your tabs stay yours. An agent can only reach the tabs it opened: never yours, never another agent's.
-• Watch it work. Each agent gets its own cursor that glides, clicks and types, and its tabs wear its icon.
-• Stop anytime. Click the toolbar icon to pause every agent at once.
+I built it because I wanted my agents to get things done in the browser without taking over my screen. Each agent gets its own tabs in the background, grouped under its name and muted, and Chrome never jumps in front of what you're doing. An agent can only touch the tabs it opened, so your own tabs, and other agents' tabs, stay off limits.
 
-Set up with one command:
-  npx tabhand setup
-It adds Tabhand to the agents on your computer and connects them to this extension. Everything runs on your computer: no servers, no analytics.
+You can watch along if you like. Every agent has its own cursor that moves, clicks and types on the page, and its tabs show its icon. Click the Tabhand button in the toolbar to pause all agents at once.
 
-Open source (MIT): https://github.com/tabhand/tabhand
+To set it up, run this in a terminal:
+npx tabhand setup
+
+That adds Tabhand to the agents on your computer and connects them to this extension. Everything runs locally: no servers, no analytics.
+
+Tabhand is open source (MIT): https://github.com/tabhand/tabhand
 ```
 
 ## Privacy practices
