@@ -25,6 +25,8 @@ npx tabhand setup
 
 Works with Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Copilot and more: [19 agents](#setup-macos-google-chrome) in all, plus anything else that speaks MCP.
 
+> **The Chrome Web Store listing is in review.** Until it's approved, setup has you load the extension into Chrome yourself. It takes a minute, and you only do it once.
+
 ## Why Tabhand
 
 - **Your logins, not a blank browser.** Agents work in the Chrome you already use, so email, dashboards and admin panels just work. You never hand over a password.
@@ -66,7 +68,7 @@ That's all:
 - It installs Tabhand in `~/.tabhand` and connects it to Chrome.
 - It adds Tabhand to every agent it finds, for all your projects. Each new session gets the browser tools, and the server's instructions tell the agent when to reach for them.
 - It asks before changing anything. Where an agent has its own `mcp add` command, setup uses it. Otherwise it edits the agent's settings file in place, keeping comments, and backs up the original to `~/.tabhand/backups`.
-- It walks you through loading the extension in Chrome, which you only do once.
+- It walks you through loading the extension in Chrome, which you only do once: turn on Developer mode at `chrome://extensions`, click "Load unpacked", and paste the folder setup copied to your clipboard.
 
 Agents it knows:
 
