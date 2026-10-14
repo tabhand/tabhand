@@ -7,8 +7,8 @@ import os from 'node:os';
 import readline from 'node:readline/promises';
 import { BridgeClient } from './bridge-client.mjs';
 import { HARNESSES, addTo, harnessStatus, removeFrom } from './harnesses.mjs';
-import { install, status, uninstall } from './install.mjs';
-import { installDir, installedExtensionDir, launcherPath } from './paths.mjs';
+import { fromCheckout, install, status, uninstall } from './install.mjs';
+import { STORE_EXTENSION_ID, STORE_URL, installDir, installedExtensionDir, launcherPath } from './paths.mjs';
 import { VERSION } from './version.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,16 +34,81 @@ async function confirm(question, { yes }) {
   }
 }
 
-/** The extension's version, if Chrome is connected (asks the extension itself). */
-async function extensionVersion() {
+/**
+ * The connected extension, if Chrome is connected: its version (asked of the extension itself),
+ * whether it's the Chrome Web Store copy, and any other copies or profiles the bridge knows about.
+ */
+async function extensionInfo() {
   const bridge = new BridgeClient({ sessionId: crypto.randomUUID(), label: 'Setup' });
   try {
-    return (await bridge.request('diagnostics')).version ?? 'unknown';
+    const diagnostics = await bridge.request('diagnostics');
+    const id = diagnostics.bridge?.extensionId ?? null;
+    return {
+      version: diagnostics.version ?? 'unknown',
+      id,
+      store: id === STORE_EXTENSION_ID,
+      others: diagnostics.bridge?.others ?? [],
+      bridgeVersion: diagnostics.bridge?.version ?? null,
+      // Bridges before 0.8.0 don't say which copy of the extension started them.
+      known: Boolean(diagnostics.bridge),
+    };
   } catch {
     return null;
   } finally {
     bridge.close();
   }
+}
+
+/** "0.7.3, from the Chrome Web Store", or just the version when an older bridge can't tell. */
+const describe = (extension) =>
+  extension.known ? `${extension.version}, ${extension.store ? 'from the Chrome Web Store' : 'loaded by hand'}` : extension.version;
+
+/** Points out a copy loaded by hand next to (or instead of) the store copy, and extra profiles. */
+function adviseOnCopies(extension, log) {
+  if (!extension.known) return;
+  const others = extension.others ?? [];
+  if (!fromCheckout && !extension.store) {
+    log(`! This is a copy of the extension you loaded by hand. Switch to the Chrome Web Store version, which updates itself:
+    1. Add it from ${STORE_URL}
+    2. Remove the old one, marked "Unpacked", at chrome://extensions`);
+  } else if (!fromCheckout && others.some((other) => other.extensionId && other.extensionId !== extension.id)) {
+    log('! A copy of the extension you loaded by hand is installed too. Remove the one marked "Unpacked" at chrome://extensions.');
+  }
+  const profiles = others.filter((other) => other.extensionId === extension.id).length;
+  if (profiles) log(`! Tabhand is on in ${profiles + 1} Chrome profiles. Agents use the one that connected first; turn it off in the others to choose.`);
+}
+
+const BROWSER_APPS = {
+  chrome: 'Google Chrome',
+  'chrome-beta': 'Google Chrome Beta',
+  'chrome-canary': 'Google Chrome Canary',
+  'chrome-for-testing': 'Google Chrome for Testing',
+  chromium: 'Chromium',
+  brave: 'Brave Browser',
+  edge: 'Microsoft Edge',
+};
+
+/** Opens a page in the browser (macOS). The new tab also wakes an installed extension, so it connects sooner. */
+function openInBrowser(browser, url) {
+  if (process.platform !== 'darwin' || !BROWSER_APPS[browser]) return;
+  try {
+    execFileSync('open', ['-a', BROWSER_APPS[browser], url], { stdio: 'ignore' });
+  } catch {}
+}
+
+/** Has Chrome reload the extension, which also restarts the bridge, and waits for it to come back. */
+async function reloadExtension() {
+  const bridge = new BridgeClient({ sessionId: crypto.randomUUID(), label: 'Setup' });
+  await bridge.request('reload_extension').catch(() => {});
+  bridge.close();
+  const deadline = Date.now() + 15_000;
+  await sleep(1500);
+  while (Date.now() < deadline) {
+    const extension = await extensionInfo();
+    if (extension?.known && extension.bridgeVersion === VERSION) return extension;
+    await sleep(500);
+  }
+  return extensionInfo();
 }
 
 async function waitForChrome(timeoutMs) {
@@ -59,7 +124,7 @@ export async function setup({ harnesses: keys, yes = false, wait = true, browser
   const chosen = pickHarnesses(keys);
   log(`Tabhand ${VERSION}\n`);
   await install({ browser });
-  log(`✓ Installed in ${tilde(installDir())}, and connected to ${browser === 'chrome' ? 'Chrome' : browser}'s extension bridge`);
+  log(`✓ Installed in ${tilde(installDir())} and registered with ${browser === 'chrome' ? 'Chrome' : browser}`);
 
   // Agents
   const launcher = launcherPath();
@@ -87,17 +152,20 @@ export async function setup({ harnesses: keys, yes = false, wait = true, browser
   }
 
   // Chrome
-  const version = await extensionVersion();
-  if (version && version !== VERSION) {
-    // The new files are in place; have Chrome load them.
-    const bridge = new BridgeClient({ sessionId: crypto.randomUUID(), label: 'Setup' });
-    await bridge.request('reload_extension').catch(() => {});
-    bridge.close();
-    log(`✓ Updated the Chrome extension from ${version}`);
-    await waitForChrome(15_000);
-  } else if (version) {
-    log('✓ Chrome extension connected');
-  } else {
+  let extension = await extensionInfo();
+  if (extension && (!extension.known || extension.bridgeVersion !== VERSION)) {
+    // The bridge of an older Tabhand is still running. Reloading the extension starts this one.
+    extension = (await reloadExtension()) ?? extension;
+  }
+  if (extension?.known && !extension.store && extension.version !== VERSION) {
+    // A copy loaded by hand runs from the files setup just updated; have Chrome load them.
+    const updated = await reloadExtension();
+    log(`✓ Updated the Chrome extension from ${extension.version}`);
+    adviseOnCopies(updated ?? extension, log);
+  } else if (extension) {
+    log(`✓ Chrome extension connected (${describe(extension)})`);
+    adviseOnCopies(extension, log);
+  } else if (fromCheckout) {
     const folder = installedExtensionDir();
     try {
       execFileSync('pbcopy', { input: folder });
@@ -110,20 +178,37 @@ One last step: load the extension in Chrome (once).
     if (!wait) return;
     log('\nWaiting for Chrome…');
     log((await waitForChrome(5 * 60_000)) ? '✓ Chrome extension connected. All set.' : 'Not connected yet. Check with `tabhand status` once the extension is loaded.');
+  } else {
+    log(`
+One last step: add the Tabhand extension to Chrome. Opening it in the Chrome Web Store:
+  ${STORE_URL}
+Already added it? Then it connects on its own in a moment.`);
+    openInBrowser(browser, STORE_URL);
+    if (!wait) return;
+    log('\nWaiting for Chrome…');
+    if (await waitForChrome(5 * 60_000)) {
+      const connected = await extensionInfo();
+      log(`✓ Chrome extension connected${connected ? ` (${describe(connected)})` : ''}. All set.`);
+      if (connected) adviseOnCopies(connected, log);
+    } else {
+      log('Not connected yet. Check with `tabhand status` once the extension is added.');
+    }
   }
 }
 
 export async function report({ log = console.log } = {}) {
   const state = await status();
-  const version = state.connected ? await extensionVersion() : null;
+  const extension = state.connected ? await extensionInfo() : null;
   log(`Tabhand ${VERSION}\n`);
   log(state.installed ? `✓ Installed in ${tilde(installDir())}` : '✗ Not installed. Run `npx tabhand setup`.');
   log(state.registered.length ? `✓ Bridge registered with ${state.registered.join(', ')}` : '✗ Bridge not registered with any browser');
-  log(
-    version
-      ? `✓ Chrome extension connected (${version}${version === VERSION ? '' : `; run \`tabhand setup\` to update it to ${VERSION}`})`
-      : `✗ Chrome extension not connected. Is Chrome open with the extension on? (folder: ${state.extensionDir})`,
-  );
+  if (extension) {
+    const stale = extension.known && !extension.store && extension.version !== VERSION;
+    log(`✓ Chrome extension connected (${describe(extension)}${stale ? `; run \`tabhand setup\` to update it to ${VERSION}` : ''})`);
+    adviseOnCopies(extension, log);
+  } else {
+    log(`✗ Chrome extension not connected. Is Chrome open with the Tabhand extension on? Get it from ${STORE_URL}`);
+  }
   log('\nAgents:');
   for (const harness of HARNESSES) {
     const installed = harness.installed();

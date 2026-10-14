@@ -14,6 +14,11 @@ import { VERSION } from './version.mjs';
 const tabLine = ({ tabId, title, url }) => `Tab ${tabId}: ${title || '(untitled)'} — ${url}`;
 const text = (value) => ({ content: [{ type: 'text', text: value }] });
 const navigatedNote = (result) =>
+  (result.chose ? `\nChose "${result.chose}" in the dropdown.` : '') +
+  (result.notes?.length ? `\n${result.notes.join('\n')}` : '') +
+  (result.dialog
+    ? `\nThe page opened a ${result.dialog.type} dialog: "${result.dialog.message}". Answer it with browser_handle_dialog before doing anything else in this tab.`
+    : '') +
   (result.navigated ? '\nThe page changed. Take a new snapshot before using refs.' : '') +
   (result.opened?.length
     ? `\nThis opened ${result.opened.length === 1 ? 'a new tab' : 'new tabs'} in your session:\n${result.opened.map(tabLine).join('\n')}`
@@ -77,7 +82,10 @@ export async function runMcpServer({ label, theme } = {}) {
     'browser_navigate',
     'Load a URL in one of this session\'s tabs and wait for it to finish loading.',
     { tabId, url: z.string().describe('Page to load.') },
-    async (args) => text(tabLine(await call('navigate', args))),
+    async (args) => {
+      const result = await call('navigate', args);
+      return text(tabLine(result) + navigatedNote(result));
+    },
   );
 
   tool(
@@ -93,7 +101,7 @@ export async function runMcpServer({ label, theme } = {}) {
 
   tool(
     'browser_click',
-    'Click an element by its ref from browser_snapshot. Waits for any page load the click starts. Links and popups that open a new tab stay in the background, join this session, and are listed in the result.',
+    'Click an element by its ref from browser_snapshot. Waits for any page load the click starts. Links and popups that open a new tab stay in the background, join this session, and are listed in the result. Clicking an option of a dropdown chooses it.',
     { tabId, ref: z.string().describe('Element ref from browser_snapshot, e.g. e123.') },
     async (args) => {
       const result = await call('click', args);
@@ -103,7 +111,7 @@ export async function runMcpServer({ label, theme } = {}) {
 
   tool(
     'browser_type',
-    'Type text into a field. Pass the field\'s ref to focus it first; omit ref to type into whatever already has focus. Set clear to replace the existing text and submit to press Enter afterwards.',
+    'Type text into a field. Pass the field\'s ref to focus it first; omit ref to type into whatever already has focus. Set clear to replace the existing text and submit to press Enter afterwards. Given a dropdown\'s ref, chooses the option with that text.',
     {
       tabId,
       ref: z.string().optional().describe('Field ref from browser_snapshot, e.g. e123.'),
@@ -124,6 +132,20 @@ export async function runMcpServer({ label, theme } = {}) {
     async (args) => {
       const result = await call('press_key', args);
       return text(tabLine(result) + navigatedNote(result));
+    },
+  );
+
+  tool(
+    'browser_handle_dialog',
+    'Answer a confirm or prompt dialog the page opened: accept it (OK) or dismiss it (Cancel). The page waits until it is answered. Alerts are closed for you. Ask the user first if accepting would send, buy, delete or change something.',
+    {
+      tabId,
+      accept: z.boolean().describe('true for OK, false for Cancel.'),
+      text: z.string().optional().describe('What to enter, for a prompt dialog.'),
+    },
+    async (args) => {
+      const result = await call('handle_dialog', args);
+      return text(`${args.accept ? 'Accepted' : 'Dismissed'} the dialog.\n${tabLine(result)}${navigatedNote(result)}`);
     },
   );
 

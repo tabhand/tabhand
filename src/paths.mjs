@@ -3,6 +3,10 @@ import path from 'node:path';
 
 export const HOST_NAME = 'dev.tabhand.bridge';
 
+/** The Chrome Web Store gives its copy of the extension an id of its own; the bridge accepts both. */
+export const STORE_EXTENSION_ID = 'gcpbhianocgipfljeephofdmbpahkmei';
+export const STORE_URL = `https://chromewebstore.google.com/detail/tabhand/${STORE_EXTENSION_ID}`;
+
 /** Per-user directory for the socket, token and logs. Only the current user can read it. */
 export function dataDir() {
   if (process.env.TABHAND_DATA_DIR) return process.env.TABHAND_DATA_DIR;

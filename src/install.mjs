@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   HOST_NAME,
+  STORE_EXTENSION_ID,
   appPath,
   dataDir,
   hostLauncherPath,
@@ -21,9 +22,8 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const extensionDir = path.join(root, 'extension');
-
-/** The Chrome Web Store gives its copy of the extension an id of its own; the bridge accepts both. */
-export const STORE_EXTENSION_ID = 'gcpbhianocgipfljeephofdmbpahkmei';
+/** Running from a clone of the repository, where the extension gets loaded by hand. */
+export const fromCheckout = fs.existsSync(path.join(root, '.git'));
 
 /** Chrome derives an unpacked extension's id from the public key in its manifest. */
 export function extensionId() {
@@ -132,7 +132,7 @@ export function uninstall({ userDataDir } = {}) {
       removed.push(file);
     }
   }
-  for (const target of [installDir(), ...oldHostFiles()]) {
+  for (const target of [installDir(), dataDir(), ...oldHostFiles()]) {
     if (fs.existsSync(target)) {
       fs.rmSync(target, { recursive: true, force: true });
       removed.push(target);

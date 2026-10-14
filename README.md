@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/tabhand"><img src="https://img.shields.io/npm/v/tabhand?color=7c3aed&label=npm" alt="npm version"></a>
+  <a href="https://chromewebstore.google.com/detail/tabhand/gcpbhianocgipfljeephofdmbpahkmei"><img src="https://img.shields.io/chrome-web-store/v/gcpbhianocgipfljeephofdmbpahkmei?color=1a73e8&label=chrome%20web%20store" alt="Chrome Web Store"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/macOS-Google%20Chrome-4b5563" alt="macOS and Google Chrome">
 </p>
@@ -25,7 +26,7 @@ npx tabhand setup
 
 Works with Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Copilot and more: [19 agents](#setup-macos-google-chrome) in all, plus anything else that speaks MCP.
 
-> **The Chrome Web Store listing is in review.** Until it's approved, setup has you load the extension into Chrome yourself. It takes a minute, and you only do it once.
+Then add the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/tabhand/gcpbhianocgipfljeephofdmbpahkmei). Setup opens the page for you.
 
 ## Why Tabhand
 
@@ -68,7 +69,7 @@ That's all:
 - It installs Tabhand in `~/.tabhand` and connects it to Chrome.
 - It adds Tabhand to every agent it finds, for all your projects. Each new session gets the browser tools, and the server's instructions tell the agent when to reach for them.
 - It asks before changing anything. Where an agent has its own `mcp add` command, setup uses it. Otherwise it edits the agent's settings file in place, keeping comments, and backs up the original to `~/.tabhand/backups`.
-- It walks you through loading the extension in Chrome, which you only do once: turn on Developer mode at `chrome://extensions`, click "Load unpacked", and paste the folder setup copied to your clipboard.
+- It opens Tabhand in the Chrome Web Store, so you can add the extension (once), and waits for Chrome to connect.
 
 Agents it knows:
 
@@ -89,6 +90,8 @@ node bin/tabhand.mjs setup    # builds dist/tabhand.mjs and installs it from thi
 node bin/tabhand.mjs reload   # after changing the extension's code
 ```
 
+From a checkout, setup has you load the extension unpacked (Developer mode, then "Load unpacked") instead of adding it from the Chrome Web Store.
+
 Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`), because macOS doesn't let Chrome's child processes read Documents, Desktop or Downloads. Agents and Chrome both start it through `~/.tabhand/bin/tabhand`. That launcher remembers which Node.js ran setup, since agent apps don't get your shell's PATH. If that Node.js is removed later, it finds another one. If Chrome never connects, the bridge's log at `~/Library/Application Support/tabhand/host.log` says why.
 
 ## Tools
@@ -99,10 +102,11 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 | `browser_navigate` | Load a URL in one of the session's tabs |
 | `browser_snapshot` | Read the page as an accessibility outline; actionable elements get refs like `e123` |
 | `browser_click` | Click an element by ref |
-| `browser_type` | Type into a field, optionally clearing it first and pressing Enter after |
+| `browser_type` | Type into a field, optionally clearing it first and pressing Enter after, or choose a dropdown option by its text |
 | `browser_press_key` | Press a key or combination such as `Shift+Tab` |
 | `browser_scroll` | Scroll up or down |
 | `browser_upload_file` | Attach files from your computer to a file field, or through the button that opens a file picker (no system dialog appears) |
+| `browser_handle_dialog` | Accept or dismiss a confirm or prompt dialog the page opened (alerts are closed for you) |
 | `browser_screenshot` | Screenshot a tab, even in the background |
 | `browser_list_tabs` | List the session's tabs |
 | `browser_close_tab` | Close one of the session's tabs |
@@ -126,7 +130,7 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - Per-site approval: agents ask before using a site for the first time
 - Confirmation before sending, buying or deleting
 - Logins filled from your password manager without the AI seeing the password
-- Downloads, dialogs and iframes
+- Downloads and iframes
 - Windows and Linux
 
 ## License

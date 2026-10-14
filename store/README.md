@@ -2,7 +2,7 @@
 
 What goes into each field of the Chrome Web Store developer dashboard, kept here so updates stay consistent. The images in this folder are the listing's: `icon-128.png` (store icon), `screenshot-1..3.png` (1280×800), `promo-small.png` (small promo tile, 440×280), `marquee-promo.jpg` (marquee promo tile, 1400×560).
 
-The package is `extension/`, zipped with the manifest's `key` removed (the store assigns its own ID).
+The package is `extension/`, zipped with the manifest's `key` removed (the store assigns its own ID): `npm run store-zip` writes `tabhand-extension-<version>.zip`.
 
 ## Store listing
 
@@ -13,11 +13,11 @@ The package is `extension/`, zipped with the manifest's `key` removed (the store
 ```
 Tabhand lets AI coding agents like Claude Code, Codex, Cursor and OpenCode use your Chrome, with the logins you already have.
 
-I built it because I wanted my agents to get things done in the browser without taking over my screen. Each agent gets its own tabs in the background, grouped under its name and muted, and Chrome never jumps in front of what you're doing. An agent can only touch the tabs it opened, so your own tabs, and other agents' tabs, stay off limits.
+I built it because I wanted my agents to get things done in the browser without taking over my screen. Each agent gets its own tabs in the background, grouped under its name and muted, so you can keep working while it does. An agent can only touch the tabs it opened, so your own tabs, and other agents' tabs, stay off limits.
 
 You can watch along if you like. Every agent has its own cursor that moves, clicks and types on the page, and its tabs show its icon. Click the Tabhand button in the toolbar to pause all agents at once.
 
-To set it up, run this in a terminal:
+Tabhand works on macOS, with Google Chrome. To set it up, run this in Terminal:
 npx tabhand setup
 
 That adds Tabhand to the agents on your computer and connects them to this extension. Everything runs locally: no servers, no analytics.

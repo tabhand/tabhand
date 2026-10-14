@@ -118,7 +118,8 @@ export const HARNESSES = [
     name: 'Gemini CLI',
     label: 'Gemini',
     theme: 'gemini',
-    installed: () => onPath('gemini') || exists(home('.gemini')),
+    // Not ~/.gemini alone: Antigravity keeps its settings in there too.
+    installed: () => onPath('gemini') || exists(home('.gemini', 'oauth_creds.json')),
     cli: {
       command: 'gemini',
       add: (server) => ['mcp', 'add', '-s', 'user', SERVER_NAME, '--', server.command, ...server.args],

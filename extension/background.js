@@ -14,9 +14,22 @@ const HOST_NAME = 'dev.tabhand.bridge';
 const VERSION = chrome.runtime.getManifest().version;
 const ALLOWED_SCHEMES = new Set(['http:', 'https:']);
 
+const SETUP_URL = 'https://tabhand.dev/docs#setup';
+
 /** @type {chrome.runtime.Port | null} */
 let port = null;
 let paused = false;
+/**
+ * The helper on the computer: 'on' (connected), 'missing' (`npx tabhand setup` hasn't run yet),
+ * 'standby' (another Chrome profile has it, so agents use that one) or 'off'.
+ */
+let helper = 'off';
+/** Set on first install: show the setup page if the helper turns out to be missing. */
+let welcomePending = false;
+/** Whether the user was in Chrome when the latest agent action began, and when (the helper says; older ones don't). */
+let userInChrome = { value: undefined, at: 0 };
+/** Set once the helper says it's 0.8 or later: older ones can't pass dialogs on to the agent. */
+let helperAnswersDialogs = false;
 
 /** sessionId -> { label, groupId, windowId, tabIds: number[] } (persisted across worker restarts) */
 let sessions = {};
@@ -39,14 +52,34 @@ function connect() {
   }
   port.onMessage.addListener(onHostMessage);
   port.onDisconnect.addListener(() => {
-    void chrome.runtime.lastError;
+    const error = chrome.runtime.lastError?.message ?? '';
     port = null;
+    // "Specified native messaging host not found": setup hasn't registered the helper yet.
+    setHelper(/not found/i.test(error) ? 'missing' : 'off');
+    if (helper === 'missing' && welcomePending) {
+      welcomePending = false;
+      chrome.tabs.create({ url: SETUP_URL }).catch(() => {});
+    }
   });
   port.postMessage({ type: 'hello', version: VERSION });
+  // Only call it on once the helper stays: a missing one disconnects straight away.
+  const connecting = port;
+  setTimeout(() => {
+    if (port === connecting) setHelper('on');
+  }, 1500);
+}
+
+function setHelper(state) {
+  if (helper === state) return;
+  helper = state;
+  updateBadge();
 }
 
 chrome.runtime.onStartup.addListener(connect);
-chrome.runtime.onInstalled.addListener(connect);
+chrome.runtime.onInstalled.addListener(({ reason }) => {
+  if (reason === 'install') welcomePending = true;
+  connect();
+});
 chrome.alarms.create('tabhand-tick', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {
   connect();
@@ -56,18 +89,31 @@ connect();
 
 async function onHostMessage(message) {
   await ready;
+  welcomePending = false;
+  if (message.type === 'standby' || message.type === 'active') {
+    helperAnswersDialogs = true;
+    setHelper(message.type === 'standby' ? 'standby' : 'on');
+    return;
+  }
   if (message.type === 'session-ended') {
     await endSession(message.sessionId);
     return;
   }
   if (message.type !== 'request') return;
+  if (typeof message.userInChrome === 'boolean') userInChrome = { value: message.userInChrome, at: Date.now() };
   const handler = handlers[message.cmd];
   try {
     if (!handler) throw new Error(`Unknown command: ${message.cmd}`);
     if (paused && message.cmd !== 'reload_extension') {
       throw new Error('The user paused Tabhand in Chrome. Ask them to click the Tabhand toolbar icon to resume.');
     }
-    const result = await handler(message.sessionId, message.label, message.params ?? {}, message.theme);
+    const params = message.params ?? {};
+    const run = () => handler(message.sessionId, message.label, params, message.theme);
+    // Steps in a tab can be cut short by a dialog; closing a tab or answering one can't.
+    const result =
+      Number.isInteger(params.tabId) && !['handle_dialog', 'close_tab'].includes(message.cmd)
+        ? await withDialogs(message.sessionId, params.tabId, message.cmd, run)
+        : await run();
     port?.postMessage({ type: 'response', id: message.id, ok: true, result });
   } catch (error) {
     port?.postMessage({ type: 'response', id: message.id, ok: false, error: String(error?.message ?? error) });
@@ -77,9 +123,14 @@ async function onHostMessage(message) {
 // ---------------------------------------------------------------- pause switch
 
 function updateBadge() {
-  chrome.action.setBadgeText({ text: paused ? 'OFF' : '' });
-  chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
-  chrome.action.setTitle({ title: paused ? 'Tabhand is paused. Click to resume.' : 'Tabhand is on. Click to pause.' });
+  const missing = helper === 'missing' && !paused;
+  chrome.action.setBadgeText({ text: paused ? 'OFF' : missing ? '!' : '' });
+  chrome.action.setBadgeBackgroundColor({ color: missing ? '#d97706' : '#6b7280' });
+  let title = 'Tabhand is on. Click to pause.';
+  if (paused) title = 'Tabhand is paused. Click to resume.';
+  else if (missing) title = 'Tabhand needs one more step: run npx tabhand setup in Terminal. Click for help.';
+  else if (helper === 'standby') title = 'Tabhand is on in another Chrome profile, so agents use that one. Click to pause.';
+  chrome.action.setTitle({ title });
 }
 
 async function setPaused(value) {
@@ -95,6 +146,10 @@ async function setPaused(value) {
 
 chrome.action.onClicked.addListener(async () => {
   await ready;
+  if (helper === 'missing' && !paused) {
+    chrome.tabs.create({ url: SETUP_URL }).catch(() => {});
+    return;
+  }
   await setPaused(!paused);
 });
 
@@ -125,6 +180,8 @@ const reattaches = new Map();
 
 async function detachIdleTabs() {
   for (const tabId of attached) {
+    // A tab with a dialog waiting keeps the debugger, so the answer can still reach the page.
+    if (dialogs.has(tabId)) continue;
     if (Date.now() - (lastUsed.get(tabId) ?? 0) > IDLE_DETACH_MS) await detach(tabId);
   }
 }
@@ -152,6 +209,8 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     }
   }
   if (method === 'Page.windowOpen') expectedOpens.push({ openerTabId: source.tabId, at: Date.now() });
+  if (method === 'Page.javascriptDialogOpening') void onDialog(source.tabId, params);
+  if (method === 'Page.javascriptDialogClosed') dialogs.delete(source.tabId);
   // A new page has no cursor yet: put it back where the agent left it.
   if (method === 'Page.domContentEventFired') void presentCursor(source.tabId);
   const state = loads.get(source.tabId);
@@ -186,6 +245,72 @@ chrome.debugger.onDetach.addListener(async (source, reason) => {
     attach(tabId).catch(() => {});
   }
 });
+
+// ---------------------------------------------------------------- dialogs
+
+/** tabId -> a confirm or prompt dialog waiting for the agent's answer (see handle_dialog) */
+const dialogs = new Map();
+/** tabId -> dialogs Tabhand closed itself, reported with the tab's next result */
+const dialogNotes = new Map();
+/** Steps waiting to hear that their tab opened a dialog (see withDialogs) */
+const dialogWaiters = new Set();
+
+/**
+ * A dialog blocks its page, and every step in it, until it's answered. An alert only informs, and
+ * leaving a page is what the agent asked for, so those are closed right away. A confirm or a prompt
+ * is the agent's call: the step that opened it returns, and the agent answers with handle_dialog.
+ */
+async function onDialog(tabId, { type, message, defaultPrompt }) {
+  if (!sessionOfTab(tabId)) return;
+  const text = String(message ?? '').slice(0, 500);
+  if (type === 'alert' || type === 'beforeunload') {
+    const note = type === 'alert' ? `The page showed an alert, which Tabhand closed: "${text}"` : 'The page asked whether to leave it, and Tabhand left.';
+    dialogNotes.set(tabId, [...(dialogNotes.get(tabId) ?? []), note]);
+    await sendNow(tabId, 'Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
+    return;
+  }
+  if (!helperAnswersDialogs) {
+    // An older helper has no way to pass the question on to the agent: answer Cancel and say so.
+    const note = `The page asked "${text}" in a ${type} dialog, and Tabhand answered Cancel. Run \`npx tabhand@latest setup\` to let agents answer dialogs.`;
+    dialogNotes.set(tabId, [...(dialogNotes.get(tabId) ?? []), note]);
+    await sendNow(tabId, 'Page.handleJavaScriptDialog', { accept: false }).catch(() => {});
+    return;
+  }
+  dialogs.set(tabId, { type, message: text, defaultPrompt: String(defaultPrompt ?? '') });
+  for (const waiter of dialogWaiters) if (waiter.tabId === tabId) waiter.resolve();
+}
+
+const dialogQuestion = (dialog) =>
+  `The page is waiting for an answer to a ${dialog.type} dialog: "${dialog.message}". Answer it with browser_handle_dialog first.`;
+
+/** Steps whose results can tell the agent about a dialog; the others stop with the question. */
+const REPORTS_DIALOGS = new Set(['click', 'type', 'press_key', 'navigate', 'upload_files']);
+
+/** Runs a step in an agent's tab. If the page opens a confirm or prompt meanwhile, returns with it
+ * instead of waiting on the blocked page. */
+async function withDialogs(sessionId, tabId, cmd, run) {
+  if (!sessions[sessionId]?.tabIds.includes(tabId)) return run();
+  const waiting = dialogs.get(tabId);
+  if (waiting) throw new Error(dialogQuestion(waiting));
+  let waiter;
+  const opened = new Promise((resolve) => dialogWaiters.add((waiter = { tabId, resolve })));
+  try {
+    const step = run();
+    const outcome = await Promise.race([step.then((value) => ({ value })), opened.then(() => null)]);
+    if (outcome) return withNotes(tabId, outcome.value);
+    step.catch(() => {});
+    if (!REPORTS_DIALOGS.has(cmd)) throw new Error(dialogQuestion(dialogs.get(tabId)));
+    return withNotes(tabId, { ...(await describe(tabId)), dialog: dialogs.get(tabId), opened: await takeOpened(tabId) });
+  } finally {
+    dialogWaiters.delete(waiter);
+  }
+}
+
+function withNotes(tabId, result) {
+  const notes = dialogNotes.get(tabId);
+  dialogNotes.delete(tabId);
+  return notes && result && typeof result === 'object' ? { ...result, notes } : result;
+}
 
 // ---------------------------------------------------------------- tabs that pages open
 
@@ -244,6 +369,8 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   await ready;
   const openerTabId = agentOpener(tab);
   if (openerTabId === undefined) return;
+  // Chrome may have just come to the front for this tab or popup; the helper gives the front back.
+  port?.postMessage({ type: 'opened' });
   const session = sessionOfTab(openerTabId);
   session.tabIds.push(tab.id);
   lastUsed.set(tab.id, Date.now());
@@ -262,7 +389,9 @@ chrome.tabs.onCreated.addListener(async (tab) => {
       await save();
     } else {
       // A popup window. If it took focus from a window the user was in, give it back. If the user
-      // was in another app, leave Chrome alone: focusing a window would bring Chrome forward.
+      // was in another app, leave Chrome alone: focusing a window would bring Chrome forward (the
+      // helper gives that app the front back instead).
+      if (userInChrome.value === false && Date.now() - userInChrome.at < 10_000) return;
       await sleep(250);
       const userWindow = focusedWindow === tab.windowId ? previousFocusedWindow : chrome.windows.WINDOW_ID_NONE;
       if (userWindow !== chrome.windows.WINDOW_ID_NONE) await chrome.windows.update(userWindow, { focused: true });
@@ -285,6 +414,8 @@ async function takeOpened(tabId) {
 }
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  dialogs.delete(tabId);
+  dialogNotes.delete(tabId);
   attached.delete(tabId);
   quietTabs.delete(tabId);
   drops.delete(tabId);
@@ -822,8 +953,11 @@ function watchNavigation(tabId) {
 
 const backgroundTabModifier = chrome.runtime.getPlatformInfo().then(({ os }) => (os === 'mac' ? 4 : 2));
 
-/** True when clicking the element follows a link into a new tab or window (target=_blank etc.). */
-async function opensNewTab(tabId, backendNodeId) {
+/**
+ * Where the element's link goes, when clicking it would follow the link into a new tab or window
+ * (target=_blank and the like); null otherwise. Links that download are left to the click.
+ */
+async function newTabLink(tabId, backendNodeId) {
   try {
     const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId });
     const { result } = await send(tabId, 'Runtime.callFunctionOn', {
@@ -831,14 +965,14 @@ async function opensNewTab(tabId, backendNodeId) {
       returnByValue: true,
       functionDeclaration: `function () {
         const link = this.closest?.('a[href], area[href]');
-        if (!link) return false;
+        if (!link || link.hasAttribute('download')) return null;
         const target = (link.getAttribute('target') || document.querySelector('base[target]')?.getAttribute('target') || '').toLowerCase();
-        return target !== '' && !['_self', '_parent', '_top'].includes(target);
+        return target !== '' && !['_self', '_parent', '_top'].includes(target) ? link.href : null;
       }`,
     });
-    return result.value === true;
+    return typeof result.value === 'string' ? result.value : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -895,6 +1029,72 @@ const ATTACH_FILES = `function (files) {
   this.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
   this.dispatchEvent(new Event('change', { bubbles: true }));
 }`;
+
+/**
+ * Picks an option in a dropdown (<select>): the option itself, or, given the dropdown, the option
+ * whose text or value matches. A closed dropdown's options have no box on the page to click, so
+ * this does what picking one does: select it and tell the page it changed. Returns null when the
+ * element isn't part of a dropdown.
+ */
+const CHOOSE_OPTION = `function (wanted) {
+  const option = this.tagName === 'OPTION' ? this : null;
+  const select = option ? option.closest('select') : this.tagName === 'SELECT' ? this : null;
+  if (!select) return null;
+  let target = option;
+  if (!target) {
+    const want = String(wanted ?? '').trim().toLowerCase();
+    const options = [...select.options];
+    if (!want) return { missing: options.map((each) => each.label.trim()) };
+    target =
+      options.find((each) => each.label.trim().toLowerCase() === want || each.value.toLowerCase() === want) ??
+      options.find((each) => want && each.label.trim().toLowerCase().includes(want));
+    if (!target) return { missing: options.map((each) => each.label.trim()) };
+  }
+  if (target.disabled || select.disabled) return { disabled: target.label.trim() };
+  target.selected = select.multiple ? !target.selected : true;
+  select.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  return { chose: target.label.trim() };
+}`;
+
+async function chooseOption(tabId, backendNodeId, wanted) {
+  const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId });
+  const { result } = await send(tabId, 'Runtime.callFunctionOn', {
+    objectId: object.objectId,
+    functionDeclaration: CHOOSE_OPTION,
+    arguments: [{ value: wanted ?? null }],
+    returnByValue: true,
+  });
+  const outcome = result.value;
+  if (!outcome) return null;
+  if (outcome.missing) throw new Error(`That dropdown has no option "${wanted}". Its options: ${outcome.missing.map((label) => `"${label}"`).join(', ')}.`);
+  if (outcome.disabled) throw new Error(`"${outcome.disabled}" can't be chosen right now: it's disabled.`);
+  return outcome.chose;
+}
+
+/** True when the element, or something inside it, has the focus (looking into shadow roots). */
+const HAS_FOCUS = `function () {
+  let active = document.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  if (!active) return false;
+  for (let node = active; node; node = node.parentNode ?? node.host) if (node === this) return true;
+  // Typing into part of a focused editable area, or into a field whose shadow root is closed (the
+  // page only shows its host as focused), lands in the right place too.
+  for (let node = this.parentNode ?? this.host; node; node = node.parentNode ?? node.host) {
+    if (node === active) return active.isContentEditable || (!active.shadowRoot && this.getRootNode() !== document);
+  }
+  return false;
+}`;
+
+async function hasFocus(tabId, backendNodeId) {
+  try {
+    const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId });
+    const { result } = await send(tabId, 'Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: HAS_FOCUS, returnByValue: true });
+    return result.value === true;
+  } catch {
+    return false;
+  }
+}
 
 function refToNodeId(ref) {
   const match = /^e(\d+)$/.exec(String(ref ?? '').trim());
@@ -1026,13 +1226,26 @@ const handlers = {
   async click(sessionId, _label, { tabId, ref, debugCursor }) {
     await ownedTab(sessionId, tabId);
     const backendNodeId = refToNodeId(ref);
+    const { node } = await send(tabId, 'DOM.describeNode', { backendNodeId }).catch(() => ({ node: {} }));
+    if (node.nodeName === 'OPTION') {
+      const chose = await chooseOption(tabId, backendNodeId);
+      if (chose !== null) return { ...(await describe(tabId)), navigated: false, chose, opened: await takeOpened(tabId) };
+    }
     const { x, y } = await elementCenter(tabId, backendNodeId);
     await showCursor(tabId, sessionId, x, y, { click: true, animate: debugCursor || undefined });
-    // Links that open a new tab get the Cmd/Ctrl-click treatment: Chrome then opens them in the
-    // background instead of switching the user's window to them.
-    const newTab = await opensNewTab(tabId, backendNodeId);
-    if (newTab) expectedOpens.push({ openerTabId: tabId, at: Date.now() });
-    const modifiers = newTab ? await backgroundTabModifier : 0;
+    // A link into a new tab gets opened by Tabhand, in the background. Clicking it would have
+    // Chrome bring its window to the front, even from a background tab, over whatever the user is in.
+    const link = await newTabLink(tabId, backendNodeId);
+    if (link && /^https?:/i.test(link)) {
+      const { windowId, index } = await chrome.tabs.get(tabId);
+      expectedOpens.push({ openerTabId: tabId, at: Date.now() });
+      await chrome.tabs.create({ url: link, active: false, windowId, index: index + 1, openerTabId: tabId });
+      await waitUntil(() => openedBy.has(tabId), 2_000);
+      return { ...(await describe(tabId)), navigated: false, opened: await takeOpened(tabId) };
+    }
+    // Other links into a new tab get the Cmd/Ctrl-click treatment, so Chrome opens them in the background.
+    if (link) expectedOpens.push({ openerTabId: tabId, at: Date.now() });
+    const modifiers = link ? await backgroundTabModifier : 0;
     const settle = watchNavigation(tabId);
     await pressAt(tabId, x, y, modifiers);
     const navigated = await settle();
@@ -1076,9 +1289,20 @@ const handlers = {
     const settle = watchNavigation(tabId);
     if (ref !== undefined && ref !== null && ref !== '') {
       const backendNodeId = refToNodeId(ref);
+      const chose = await chooseOption(tabId, backendNodeId, text);
+      if (chose !== null) {
+        const navigated = await settle();
+        return { ...(await describe(tabId)), navigated, chose, opened: await takeOpened(tabId) };
+      }
       const { x, y } = await elementCenter(tabId, backendNodeId);
       await showCursor(tabId, sessionId, x, y, { click: true });
-      await send(tabId, 'DOM.focus', { backendNodeId });
+      await send(tabId, 'DOM.focus', { backendNodeId }).catch(() => {});
+      // Some fields only take the focus from a real click. Typing without it would land in
+      // whatever field had the focus before.
+      if (!(await hasFocus(tabId, backendNodeId))) await pressAt(tabId, x, y);
+      if (!(await hasFocus(tabId, backendNodeId))) {
+        throw new Error("That element didn't take the cursor, so nothing was typed. Pick a text field from a new browser_snapshot.");
+      }
       if (clear) {
         const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId });
         await send(tabId, 'Runtime.callFunctionOn', {
@@ -1105,6 +1329,23 @@ const handlers = {
     await ownedTab(sessionId, tabId);
     const settle = watchNavigation(tabId);
     await pressKey(tabId, key);
+    const navigated = await settle();
+    return { ...(await describe(tabId)), navigated, opened: await takeOpened(tabId) };
+  },
+
+  async handle_dialog(sessionId, _label, { tabId, accept, text }) {
+    await ownedTab(sessionId, tabId, { debug: false });
+    if (!dialogs.has(tabId)) throw new Error('No dialog is waiting in that tab.');
+    const settle = watchNavigation(tabId);
+    try {
+      await attach(tabId);
+      await send(tabId, 'Page.handleJavaScriptDialog', { accept: accept !== false, ...(text !== undefined ? { promptText: String(text) } : {}) });
+    } catch {
+      // Already answered, most likely by the user in Chrome.
+      dialogs.delete(tabId);
+      return { ...(await describe(tabId)), notes: ['That dialog was already closed. Take a new snapshot.'] };
+    }
+    dialogs.delete(tabId);
     const navigated = await settle();
     return { ...(await describe(tabId)), navigated, opened: await takeOpened(tabId) };
   },
