@@ -14,9 +14,13 @@ import { readMessages, writeMessage } from './native-messaging.mjs';
 import { dataDir, logPath, socketPath, tokenPath } from './paths.mjs';
 import { VERSION } from './version.mjs';
 
-const SESSION_GRACE_MS = 30_000;
+const SESSION_GRACE_MS = Number(process.env.TABHAND_SESSION_GRACE_MS) || 30_000;
+/** What the extension answers while the user has paused Tabhand in that Chrome profile. */
+const PAUSED = /^The user paused Tabhand/;
 const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
+/** Lines between hosts carry answers too (a full-page screenshot can be several MB). */
+const MAX_RELAY_BYTES = 64 * 1024 * 1024;
 /** How long after an agent's action finishes Chrome may still come forward for a tab it opened. */
 const FOCUS_WATCH_MS = 1_500;
 /** After giving the front back, how long to keep it from Chrome while a popup finishes showing. */
@@ -137,16 +141,35 @@ async function keepUserInFront(entry) {
  * Another Chrome profile (or another copy of the extension) already runs the bridge. Exiting would
  * make this extension start a new host every 30 seconds, so stay connected instead: tell the running
  * bridge this extension is here (for `tabhand status`), and resolve once that bridge goes away.
+ * While standing by, the bridge can hand this profile work (when its own profile is paused): each
+ * line it sends goes to `onLine`. `relay: true` tells it this host knows how.
  */
-function standBy(version) {
+function standBy(version, onLine) {
   return new Promise((resolve) => {
     const socket = net.connect(socketPath());
+    let buffer = '';
+    socket.setEncoding('utf8');
     socket.on('connect', () => {
       let token = '';
       try {
         token = fs.readFileSync(tokenPath(), 'utf8');
       } catch {}
-      socket.write(JSON.stringify({ type: 'standby', token, extensionId, version: version() }) + '\n');
+      socket.write(JSON.stringify({ type: 'standby', token, extensionId, version: version(), relay: true }) + '\n');
+    });
+    socket.on('data', (data) => {
+      buffer += data;
+      if (buffer.length > MAX_RELAY_BYTES) {
+        socket.destroy();
+        return;
+      }
+      let index;
+      while ((index = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        try {
+          onLine(socket, JSON.parse(line));
+        } catch {}
+      }
     });
     socket.on('error', () => {});
     socket.on('close', () => resolve());
@@ -198,11 +221,50 @@ export async function runHost() {
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 
+  // Standing by, this profile still does work the bridge hands it while the bridge's own profile
+  // is paused: requests go to this extension, and its answers go back over the same line.
+  /** @type {Map<string, {socket: net.Socket, rid: number}>} */
+  const relayed = new Map();
+  let nextRelayed = 1;
+  let bridgeLine = null;
+  const toBridge = (socket, message) => {
+    if (socket && !socket.destroyed) socket.write(JSON.stringify(message) + '\n');
+  };
+  onExtensionMessage = (message) => {
+    if (message.type === 'opened') toBridge(bridgeLine, { type: 'relay-opened' });
+    if (message.type !== 'response') return;
+    const entry = relayed.get(message.id);
+    if (!entry) return;
+    relayed.delete(message.id);
+    toBridge(entry.socket, { type: 'relay-response', rid: entry.rid, ok: message.ok, result: message.result, error: message.error });
+  };
+  const onBridgeLine = (socket, message) => {
+    bridgeLine = socket;
+    if (message.type === 'relay') {
+      const id = `relay-${nextRelayed++}`;
+      relayed.set(id, { socket, rid: message.rid });
+      writeMessage(process.stdout, {
+        type: 'request',
+        id,
+        sessionId: message.sessionId,
+        label: message.label,
+        theme: message.theme,
+        cmd: message.cmd,
+        params: message.params ?? {},
+        userInChrome: message.userInChrome,
+      });
+    } else if (message.type === 'relay-end') {
+      writeMessage(process.stdout, { type: 'session-ended', sessionId: message.sessionId });
+    }
+  };
+
   while (await isSocketLive(socketPath())) {
     await Promise.race([hello, sleep(2000)]);
     log('another Chrome profile runs the bridge; standing by');
     writeMessage(process.stdout, { type: 'standby' });
-    await standBy(() => extensionVersion);
+    await standBy(() => extensionVersion, onBridgeLine);
+    relayed.clear();
+    bridgeLine = null;
     // Several profiles may be standing by; staggered, they don't all take over at once.
     await sleep(1000 + Math.random() * 1000);
   }
@@ -227,6 +289,17 @@ export async function runHost() {
   const pending = new Map();
   /** Hosts of other profiles (or copies of the extension), standing by. */
   const standbys = new Set();
+  // When this profile is paused, an agent's new work goes to another profile where Tabhand is on.
+  /** sessionId -> the standing-by host the session's new work goes to now. */
+  const routes = new Map();
+  /** tabId -> where that tab lives (a standing-by host, or null for this profile), so work on a tab
+   *  always goes to the profile that has it. Chrome's tab ids are unique across profiles. */
+  const homes = new Map();
+  /** sessionId -> standing-by hosts that did work for the session, told when it ends. */
+  const touched = new Map();
+  const live = (target) => Boolean(target && !target.socket.destroyed);
+  /** The tab a request is about. Upload chunks name theirs as forTab, so they go where the tab is. */
+  const tabOf = (params) => (Number.isInteger(params.tabId) ? params.tabId : Number.isInteger(params.forTab) ? params.forTab : null);
   let nextId = 1;
 
   const toExtension = (message) => writeMessage(process.stdout, message);
@@ -271,9 +344,19 @@ export async function runHost() {
       client.standby = {
         extensionId: /^[a-p]{32}$/.test(message.extensionId) ? message.extensionId : null,
         version: message.version ? String(message.version).slice(0, 20) : null,
+        relay: message.relay === true,
       };
       standbys.add(client);
       log('another Chrome profile is standing by');
+      return;
+    }
+
+    if (message.type === 'relay-response' && client.standby) {
+      if (pending.get(message.rid)?.via === client) answered(message.rid, message);
+      return;
+    }
+    if (message.type === 'relay-opened' && client.standby) {
+      lastOpenedAt = Date.now();
       return;
     }
 
@@ -286,21 +369,25 @@ export async function runHost() {
       const cmd = String(message.cmd ?? '');
       const timer = setTimeout(() => {
         pending.delete(id);
+        // It may have done something over there before going quiet: that profile hears when the session ends.
+        if (entry.via) {
+          if (!touched.has(entry.sessionId)) touched.set(entry.sessionId, new Set());
+          touched.get(entry.sessionId).add(entry.via);
+        }
         send(client.socket, { type: 'response', id: message.id, ok: false, error: 'Chrome did not answer in time.' });
       }, REQUEST_TIMEOUT_MS);
-      const entry = { socket: client.socket, id: message.id, cmd, timer, startedAt: Date.now() };
+      const params = message.params ?? {};
+      const entry = { socket: client.socket, id: message.id, cmd, params, timer, startedAt: Date.now(), sessionId: client.sessionId, label: client.label, theme: client.theme, tried: new Set() };
       pending.set(id, entry);
-      const forward = (userInChrome) =>
-        toExtension({
-          type: 'request',
-          id,
-          sessionId: client.sessionId,
-          label: client.label,
-          theme: client.theme,
-          cmd,
-          params: message.params ?? {},
-          userInChrome,
-        });
+      const forward = (userInChrome) => {
+        entry.userInChrome = userInChrome;
+        // Work on a tab goes where the tab is; new work goes where the session's new work moved, if it did.
+        const tabId = tabOf(params);
+        const home = tabId === null ? undefined : homes.get(tabId);
+        const target = home ? home.target : routes.get(client.sessionId);
+        if (live(target)) relay(target, id, entry);
+        else toHere(id, entry);
+      };
       if (OPENING_ACTIONS.has(cmd)) {
         // The extension needs to know where the user is: it only hands a Chrome window the focus
         // back when the user was in Chrome, since focusing one brings Chrome to the front.
@@ -314,7 +401,13 @@ export async function runHost() {
   }
 
   function onClientClosed(client) {
-    standbys.delete(client);
+    if (standbys.delete(client)) {
+      // That profile went away, with its tabs; work out with it won't come back.
+      for (const [sessionId, target] of routes) if (target === client) routes.delete(sessionId);
+      for (const [tabId, home] of homes) if (home.target === client) homes.delete(tabId);
+      for (const hosts of touched.values()) hosts.delete(client);
+      for (const [id, entry] of pending) if (entry.via === client) answered(id, { ok: false, error: 'The Chrome profile doing this was closed. Try again.' });
+    }
     const { sessionId } = client;
     if (!sessionId || sessions.get(sessionId) !== client) return;
     sessions.delete(sessionId);
@@ -324,6 +417,10 @@ export async function runHost() {
       setTimeout(() => {
         endTimers.delete(sessionId);
         toExtension({ type: 'session-ended', sessionId });
+        for (const target of touched.get(sessionId) ?? []) send(target.socket, { type: 'relay-end', sessionId });
+        touched.delete(sessionId);
+        routes.delete(sessionId);
+        for (const [tabId, home] of homes) if (home.sessionId === sessionId) homes.delete(tabId);
         log('session ended');
       }, SESSION_GRACE_MS),
     );
@@ -335,7 +432,7 @@ export async function runHost() {
     socket.setEncoding('utf8');
     socket.on('data', (data) => {
       buffer += data;
-      if (buffer.length > MAX_LINE_BYTES) {
+      if (buffer.length > (client.standby ? MAX_RELAY_BYTES : MAX_LINE_BYTES)) {
         socket.destroy();
         return;
       }
@@ -350,13 +447,53 @@ export async function runHost() {
     socket.on('error', () => {});
   });
 
-  onExtensionMessage = (message) => {
-    if (message.type === 'opened') lastOpenedAt = Date.now();
-    if (message.type !== 'response') return;
-    const entry = pending.get(message.id);
+  /** Sends a request to this profile's extension. */
+  function toHere(id, entry) {
+    entry.via = null;
+    entry.triedHere = true;
+    toExtension({ type: 'request', id, sessionId: entry.sessionId, label: entry.label, theme: entry.theme, cmd: entry.cmd, params: entry.params, userInChrome: entry.userInChrome });
+  }
+
+  /** Hands a request to a standing-by host, whose extension does it in that profile. */
+  function relay(target, id, entry) {
+    entry.via = target;
+    entry.tried.add(target);
+    send(target.socket, { type: 'relay', rid: id, sessionId: entry.sessionId, label: entry.label, theme: entry.theme, cmd: entry.cmd, params: entry.params, userInChrome: entry.userInChrome });
+  }
+
+  /** The tabs an answer names: the one acted on, any it opened, or the session's list. */
+  const tabsIn = (result) =>
+    [result?.tabId, ...(result?.opened ?? []).map((t) => t?.tabId), ...(result?.tabs ?? []).map((t) => t?.tabId)].filter(Number.isInteger);
+
+  /** A profile answered a request: this one's extension, or a standing-by host it went to. */
+  function answered(id, message) {
+    const entry = pending.get(id);
     if (!entry) return;
-    pending.delete(message.id);
+    // Paused in that profile. Work on a tab waits for it (the tab isn't anywhere else); new work
+    // can go to this profile or to another one standing by, wherever Tabhand is on.
+    if (!message.ok && PAUSED.test(String(message.error ?? '')) && tabOf(entry.params) === null) {
+      if (entry.via && routes.get(entry.sessionId) === entry.via) routes.delete(entry.sessionId);
+      if (!entry.triedHere) {
+        toHere(id, entry);
+        return;
+      }
+      const next = [...standbys].find((s) => s.standby?.relay && live(s) && !entry.tried.has(s));
+      if (next) {
+        relay(next, id, entry);
+        return;
+      }
+    }
+    pending.delete(id);
     clearTimeout(entry.timer);
+    if (entry.via) {
+      if (!touched.has(entry.sessionId)) touched.set(entry.sessionId, new Set());
+      touched.get(entry.sessionId).add(entry.via);
+      if (message.ok && routes.get(entry.sessionId) !== entry.via) {
+        routes.set(entry.sessionId, entry.via);
+        log('this profile is paused; a session moved to another profile');
+      }
+    }
+    if (message.ok) for (const tabId of tabsIn(message.result)) homes.set(tabId, { target: entry.via ?? null, sessionId: entry.sessionId });
     let result = message.result;
     if (entry.cmd === 'diagnostics' && message.ok) {
       // Which copy of the extension is connected, and which others are standing by.
@@ -365,6 +502,11 @@ export async function runHost() {
     entry.responseOpened = Boolean(message.ok && message.result?.opened?.length);
     entry.respondedAt = Date.now();
     send(entry.socket, { type: 'response', id: entry.id, ok: message.ok, result, error: message.error });
+  }
+
+  onExtensionMessage = (message) => {
+    if (message.type === 'opened') lastOpenedAt = Date.now();
+    if (message.type === 'response') answered(message.id, message);
   };
 
   server.listen(socketPath(), () => {

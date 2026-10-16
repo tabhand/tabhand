@@ -55,6 +55,7 @@ agent ──stdio──▶ tabhand mcp ──Unix socket──▶ native host �
 - **Agent tabs stand out.** While an agent works in a tab, the tab's icon becomes the agent's arrow. The site's own icon comes back when the agent is done.
 - **Each agent wears its own colors.** Claude, Codex, OpenCode, Cursor, Gemini and Copilot each get their own cursor and tab group color; anything else gets a violet cursor with its own name. Override with `tabhand mcp --label <name> --theme <theme>`.
 - **Stop button.** Click the toolbar icon, or Cancel on Chrome's "started debugging" bar, to pause every agent at once.
+- **Several Chrome profiles.** If Tabhand is in more than one profile, one of them runs the bridge and the others stand by. Pause it in one profile and new work goes to a profile where it's on; an agent's work on a tab that's in the paused profile waits until you turn it back on.
 
 ![Tab badges for each harness](docs/tab-badges.jpg)
 
@@ -116,6 +117,7 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - `npm test` runs all of these except the smoke test.
 - `node test/setup.mjs` runs setup, status and remove in a throwaway home folder holding existing agent configs. It checks that Tabhand gets added, that comments and other settings survive, that a second run changes nothing, and that the launcher serves the MCP server.
 - `node test/package.mjs` packs the npm package, installs the tarball, and runs setup from it.
+- `node test/profiles.mjs` runs two bridges against stand-in extensions and checks that pausing one profile sends new work to the other.
 - `npm run test:e2e` launches a throwaway Chrome for Testing profile, runs two agents in parallel, and checks they can't reach each other's tabs and that the browser never comes to the front.
 - `node test/new-tabs.mjs` checks that links, `window.open()` and popups from an agent's tab never take over your tab, and that the agent gets the new tab.
 - `node test/upload.mjs` checks that files reach a page byte for byte, through a file field or a button's file picker, including files over Chrome's 1 MB message cap.

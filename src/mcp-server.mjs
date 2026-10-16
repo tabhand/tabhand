@@ -204,7 +204,7 @@ export async function runMcpServer({ label, theme } = {}) {
         if (total > MAX_UPLOAD_BYTES) throw new Error(`That's more than ${MAX_UPLOAD_BYTES / 1024 / 1024} MB of files.`);
         const base64 = data.toString('base64');
         for (let at = 0; at < base64.length; at += UPLOAD_PIECE) {
-          await call('upload_part', { uploadId, file: index, data: base64.slice(at, at + UPLOAD_PIECE) });
+          await call('upload_part', { uploadId, file: index, data: base64.slice(at, at + UPLOAD_PIECE), forTab: tabId });
         }
         files.push({ name: path.basename(full), type: mimeType(full) });
       }
