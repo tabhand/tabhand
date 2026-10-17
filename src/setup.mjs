@@ -48,6 +48,7 @@ async function extensionInfo() {
       id,
       store: id === STORE_EXTENSION_ID,
       others: diagnostics.bridge?.others ?? [],
+      profile: diagnostics.bridge?.profile ?? null,
       bridgeVersion: diagnostics.bridge?.version ?? null,
       // Bridges before 0.8.0 don't say which copy of the extension started them.
       known: Boolean(diagnostics.bridge),
@@ -74,8 +75,13 @@ function adviseOnCopies(extension, log) {
   } else if (!fromCheckout && others.some((other) => other.extensionId && other.extensionId !== extension.id)) {
     log('! A copy of the extension you loaded by hand is installed too. Remove the one marked "Unpacked" at chrome://extensions.');
   }
-  const profiles = others.filter((other) => other.extensionId === extension.id).length;
-  if (profiles) log(`! Tabhand is on in ${profiles + 1} Chrome profiles. Agents use the one that connected first; turn it off in the others to choose.`);
+  const profiles = [extension, ...others.filter((other) => other.extensionId === extension.id)].map((copy) => copy.profile ?? {});
+  if (profiles.length > 1) {
+    const name = (profile) => (profile.name ? `"${profile.name}"` : 'an unnamed one');
+    log(`✓ Tabhand is in ${profiles.length} Chrome profiles: ${profiles.map(name).join(', ')}. Agents use ${profiles[0].name ? `"${profiles[0].name}"` : 'the first one'} unless you ask for another profile or pause Tabhand there.`);
+    if (profiles.some((profile) => !profile.name)) log('  To ask for a profile by name, right-click the Tabhand icon in it and choose "Name this profile".');
+    if (others.some((other) => other.extensionId === extension.id && !other.relay)) log('! One profile runs an older Tabhand helper. Quit Chrome and open it again to update it.');
+  }
 }
 
 const BROWSER_APPS = {

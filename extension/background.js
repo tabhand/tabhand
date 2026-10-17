@@ -40,6 +40,24 @@ const ready = chrome.storage.session.get(['sessions', 'paused']).then((stored) =
 });
 const save = () => chrome.storage.session.set({ sessions, paused });
 
+/**
+ * This Chrome profile, as agents see it: an id kept for good, and the name the user gives it
+ * (right-click the toolbar icon, "Name this profile"). Agents use the name to tell profiles apart.
+ */
+const profile = { id: '', name: '' };
+const profileReady = chrome.storage.local.get(['profileId', 'profileName']).then(async (stored) => {
+  profile.id = stored.profileId ?? crypto.randomUUID().slice(0, 8);
+  profile.name = stored.profileName ?? '';
+  if (!stored.profileId) await chrome.storage.local.set({ profileId: profile.id });
+  updateBadge();
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.profileName) return;
+  profile.name = changes.profileName.newValue ?? '';
+  port?.postMessage({ type: 'profile', profile });
+  updateBadge();
+});
+
 // ---------------------------------------------------------------- host connection
 
 function connect() {
@@ -61,9 +79,9 @@ function connect() {
       chrome.tabs.create({ url: SETUP_URL }).catch(() => {});
     }
   });
-  port.postMessage({ type: 'hello', version: VERSION });
-  // Only call it on once the helper stays: a missing one disconnects straight away.
   const connecting = port;
+  profileReady.then(() => connecting.postMessage({ type: 'hello', version: VERSION, profile })).catch(() => {});
+  // Only call it on once the helper stays: a missing one disconnects straight away.
   setTimeout(() => {
     if (port === connecting) setHelper('on');
   }, 1500);
@@ -79,6 +97,13 @@ chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === 'install') welcomePending = true;
   connect();
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: 'name-profile', title: 'Name this profile…', contexts: ['action'] });
+  });
+});
+chrome.contextMenus.onClicked.addListener(({ menuItemId }) => {
+  if (menuItemId !== 'name-profile') return;
+  chrome.windows.create({ url: chrome.runtime.getURL('profile.html'), type: 'popup', width: 420, height: 330, focused: true }).catch(() => {});
 });
 chrome.alarms.create('tabhand-tick', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {
@@ -126,10 +151,12 @@ function updateBadge() {
   const missing = helper === 'missing' && !paused;
   chrome.action.setBadgeText({ text: paused ? 'OFF' : missing ? '!' : '' });
   chrome.action.setBadgeBackgroundColor({ color: missing ? '#d97706' : '#6b7280' });
-  let title = 'Tabhand is on. Click to pause.';
-  if (paused) title = 'Tabhand is paused. Click to resume.';
+  const named = profile.name ? ` in “${profile.name}”` : '';
+  let title = `Tabhand is on${named}. Click to pause.`;
+  if (paused) title = `Tabhand is paused${named}. Click to resume.`;
   else if (missing) title = 'Tabhand needs one more step: run npx tabhand setup in Terminal. Click for help.';
-  else if (helper === 'standby') title = 'Tabhand is on in another Chrome profile, so agents use that one. Click to pause.';
+  // Several profiles have Tabhand: a name tells agents which is which.
+  if (!profile.name && helper === 'standby') title += ' Right-click to name this profile for agents.';
   chrome.action.setTitle({ title });
 }
 

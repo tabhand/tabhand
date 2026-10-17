@@ -1,2 +1,2 @@
 // Tabhand's version. The build checks that package.json and the extension's manifest agree.
-export const VERSION = '0.8.1';
+export const VERSION = '0.9.0';

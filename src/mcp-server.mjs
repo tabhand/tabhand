@@ -7,11 +7,26 @@ import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { BridgeClient } from './bridge-client.mjs';
+import { BridgeClient, OLD_BRIDGE } from './bridge-client.mjs';
 import { detectHarness } from './harness.mjs';
 import { VERSION } from './version.mjs';
 
-const tabLine = ({ tabId, title, url }) => `Tab ${tabId}: ${title || '(untitled)'} — ${url}`;
+const tabLine = ({ tabId, title, url, profile }) => `Tab ${tabId}: ${title || '(untitled)'} — ${url}${profile ? ` (in ${profile})` : ''}`;
+const STATES = {
+  on: 'on',
+  paused: 'paused by the user',
+  'not answering': "on, but Chrome isn't answering",
+  outdated: "can't take work until Chrome restarts (it runs an older Tabhand helper)",
+};
+/** One line per Chrome profile, for browser_list_profiles. */
+const profileLine = (p) =>
+  `- ${p.name ? `"${p.name}"` : 'Unnamed'} (id ${p.id}): ${STATES[p.state] ?? p.state}` +
+  (p.tabs ? `, ${p.tabs === 1 ? 'one of your tabs' : `${p.tabs} of your tabs`}` : '') +
+  (p.chosen && p.state !== 'on'
+    ? ". You chose it, so your new tabs can't open until it's back, unless you choose another profile."
+    : p.newTabs
+      ? `. Your new tabs open here${p.chosen ? ' (you chose it)' : ''}.`
+      : '.');
 const text = (value) => ({ content: [{ type: 'text', text: value }] });
 const navigatedNote = (result) =>
   (result.chose ? `\nChose "${result.chose}" in the dropdown.` : '') +
@@ -35,6 +50,7 @@ How it works:
 - browser_snapshot reads the page and labels what you can act on with refs like e12; browser_click and browser_type take those refs. Take a new snapshot after the page changes.
 - Prefer snapshots for reading; use browser_screenshot to check visuals.
 - Close your tabs with browser_close_tab when you're done.
+- The user may have Tabhand in several Chrome profiles (say, work and personal), each signed in to different accounts. When they mention one, or a tool says Tabhand is paused, call browser_list_profiles, then pass the profile to browser_open_tab. If it's unclear which profile they mean, ask them.
 
 You act as the user, with their accounts: ask before sending messages, posting, buying, deleting or changing settings. If a tool says Chrome isn't connected, ask the user to open Chrome and make sure the Tabhand extension is turned on.`;
 
@@ -51,13 +67,19 @@ const mimeType = (file) => MIME_TYPES[path.extname(file).slice(1).toLowerCase()]
 export async function runMcpServer({ label, theme } = {}) {
   const server = new McpServer({ name: 'tabhand', version: VERSION }, { instructions: INSTRUCTIONS });
   let bridge = null;
-  const call = async (cmd, params) => {
-    // Connect on first use, once the client has introduced itself.
+  // Connect on first use, once the client has introduced itself.
+  const bridgeFor = () => {
     if (!bridge) {
       const harness = detectHarness({ clientInfo: server.server.getClientVersion(), label, theme });
       bridge = new BridgeClient({ sessionId: crypto.randomUUID(), ...harness });
     }
-    return bridge.request(cmd, params);
+    return bridge;
+  };
+  const call = (cmd, params) => bridgeFor().request(cmd, params);
+  /** Profiles need a bridge from 0.9 on; an older one would open the tab wherever it likes. */
+  const needProfiles = async () => {
+    await bridgeFor().connect();
+    if (!bridge.knowsProfiles) throw new Error(OLD_BRIDGE);
   };
 
   const tool = (name, description, inputSchema, run, annotations = {}) =>
@@ -74,8 +96,50 @@ export async function runMcpServer({ label, theme } = {}) {
   tool(
     'browser_open_tab',
     "Open a new tab in the user's own Chrome, with their logins, and optionally load a URL. The tab opens in the background inside this session's tab group: Chrome is not brought to the front and the user's tabs are untouched, so they can keep working. Returns the tabId the other browser tools need.",
-    { url: z.string().optional().describe('Page to load, e.g. https://example.com. Omit for a blank tab.') },
-    async ({ url }) => text(tabLine(await call('open_tab', { url }))),
+    {
+      url: z.string().optional().describe('Page to load, e.g. https://example.com. Omit for a blank tab.'),
+      profile: z
+        .string()
+        .optional()
+        .describe('Chrome profile to open the tab in, by its name or id from browser_list_profiles. Only needed when the user has Tabhand in several profiles. Your later tabs open there too.'),
+    },
+    async ({ url, profile }) => {
+      const wanted = profile?.trim();
+      if (!wanted) return text(tabLine(await call('open_tab', { url })));
+      await needProfiles();
+      // The choice is told to the bridge again whenever this reconnects, so it holds if the bridge
+      // moves to another profile: by the profile's id once known, since names can change.
+      const before = bridge.profile;
+      bridge.profile = wanted;
+      try {
+        const result = await call('open_tab', { url, profile: wanted });
+        if (result.profileId) bridge.profile = result.profileId;
+        return text(tabLine(result));
+      } catch (error) {
+        // Nothing was chosen if no profile matched. (One that's paused is still chosen.)
+        if (/^(No Chrome profile|More than one Chrome profile)/.test(error.message)) bridge.profile = before;
+        throw error;
+      }
+    },
+  );
+
+  tool(
+    'browser_list_profiles',
+    "List the Chrome profiles that have Tabhand (for example work and personal, each signed in to different accounts): each one's name, whether Tabhand is on or paused there, and which one your new tabs open in.",
+    {},
+    async () => {
+      await needProfiles();
+      const { profiles, chosenMissing } = await call('profiles', {});
+      const lines = profiles.map(profileLine);
+      if (chosenMissing) lines.push(`You chose ${chosenMissing}, which isn't connected now: its Chrome window may be closed.`);
+      if (profiles.length > 1 && profiles.some((p) => !p.name && p.state !== 'outdated')) {
+        lines.push('The user can name a profile: right-click the Tabhand icon in that profile\'s Chrome toolbar and choose "Name this profile".');
+      }
+      if (profiles.length > 1) lines.push('To choose one, pass its name or id as profile to browser_open_tab.');
+      const heading = profiles.length === 1 ? 'Tabhand is in one Chrome profile:' : `Tabhand is in ${profiles.length} Chrome profiles:`;
+      return text(`${heading}\n${lines.join('\n')}`);
+    },
+    { readOnlyHint: true },
   );
 
   tool(
@@ -179,8 +243,8 @@ export async function runMcpServer({ label, theme } = {}) {
     'List the tabs this session has open. Other sessions\' tabs and the user\'s own tabs are never shown.',
     {},
     async () => {
-      const { tabs } = await call('list_tabs', {});
-      return text(tabs.length ? tabs.map(tabLine).join('\n') : 'No open tabs in this session.');
+      const { tabs, notes = [] } = await call('list_tabs', {});
+      return text([tabs.length ? tabs.map(tabLine).join('\n') : 'No open tabs in this session.', ...notes].join('\n'));
     },
     { readOnlyHint: true },
   );

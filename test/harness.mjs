@@ -24,7 +24,7 @@ export function frontmostApp() {
 }
 
 /** Starts a throwaway browser running Tabhand, plus any other unpacked extensions given. */
-export async function launchTestBrowser({ extensions = [] } = {}) {
+export async function launchTestBrowser({ extensions = [], args = [] } = {}) {
   const browserApp =
     process.env.TABHAND_TEST_BROWSER ??
     path.join(os.homedir(), 'Library/Caches/ms-playwright/chromium-1217/chrome-mac-arm64/Google Chrome for Testing.app');
@@ -40,13 +40,14 @@ export async function launchTestBrowser({ extensions = [] } = {}) {
     `--user-data-dir=${profile}`,
     `--load-extension=${[extensionDir, ...extensions].join(',')}`,
     `--disable-extensions-except=${[extensionDir, ...extensions].join(',')}`,
-    '--no-first-run', '--no-default-browser-check', 'about:blank',
+    '--no-first-run', '--no-default-browser-check', ...args, 'about:blank',
   ]);
   for (let i = 0; i < 60 && !(await status()).connected; i++) await sleep(500);
   const connected = (await status()).connected;
 
   return {
     connected,
+    profile,
     async close() {
       try {
         const pids = execFileSync('pgrep', ['-f', `user-data-dir=${profile}`], { encoding: 'utf8' }).trim().split('\n');

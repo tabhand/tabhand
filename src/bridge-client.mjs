@@ -7,6 +7,9 @@ import { socketPath, tokenPath } from './paths.mjs';
 export const NOT_CONNECTED =
   'Tabhand cannot reach Chrome. Ask the user to open Chrome and check that the Tabhand extension is installed and enabled (`tabhand status` shows the setup).';
 
+export const OLD_BRIDGE =
+  "Tabhand's helper in Chrome is from before it knew about Chrome profiles. Ask the user to quit Chrome and open it again, which restarts it.";
+
 export class BridgeClient {
   /** @param {{sessionId: string, label: string, theme?: string}} options */
   constructor({ sessionId, label, theme = 'agent' }) {
@@ -19,6 +22,9 @@ export class BridgeClient {
     this.connecting = null;
     this.pending = new Map();
     this.nextId = 1;
+    /** The Chrome profile the agent chose, if it did: told to the bridge each time this connects. */
+    this.profile = null;
+    this.knowsProfiles = false;
   }
 
   connect() {
@@ -37,7 +43,7 @@ export class BridgeClient {
       let welcomed = false;
       socket.setEncoding('utf8');
       socket.once('connect', () => {
-        socket.write(JSON.stringify({ type: 'hello', token, sessionId: this.sessionId, label: this.label, theme: this.theme }) + '\n');
+        socket.write(JSON.stringify({ type: 'hello', token, sessionId: this.sessionId, label: this.label, theme: this.theme, profile: this.profile ?? undefined }) + '\n');
       });
       socket.on('data', (data) => {
         buffer += data;
@@ -53,6 +59,8 @@ export class BridgeClient {
           }
           if (message.type === 'welcome') {
             welcomed = true;
+            // Bridges from 0.9 on can tell Chrome profiles apart.
+            this.knowsProfiles = message.profiles === true;
             this.socket = socket;
             resolve();
           } else if (message.type === 'error') {
@@ -82,6 +90,9 @@ export class BridgeClient {
   /** Sends one command to the extension and resolves with its result. */
   async request(cmd, params = {}) {
     await this.connect();
+    // The agent chose a profile, but this bridge can't tell profiles apart (an older helper took over):
+    // new work would land in whichever profile it runs in, possibly signed in as someone else.
+    if (this.profile && !this.knowsProfiles && !Number.isInteger(params.tabId) && !Number.isInteger(params.forTab)) throw new Error(OLD_BRIDGE);
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });

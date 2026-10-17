@@ -55,7 +55,7 @@ agent ──stdio──▶ tabhand mcp ──Unix socket──▶ native host �
 - **Agent tabs stand out.** While an agent works in a tab, the tab's icon becomes the agent's arrow. The site's own icon comes back when the agent is done.
 - **Each agent wears its own colors.** Claude, Codex, OpenCode, Cursor, Gemini and Copilot each get their own cursor and tab group color; anything else gets a violet cursor with its own name. Override with `tabhand mcp --label <name> --theme <theme>`.
 - **Stop button.** Click the toolbar icon, or Cancel on Chrome's "started debugging" bar, to pause every agent at once.
-- **Several Chrome profiles.** If Tabhand is in more than one profile, one of them runs the bridge and the others stand by. Pause it in one profile and new work goes to a profile where it's on; an agent's work on a tab that's in the paused profile waits until you turn it back on.
+- **Several Chrome profiles.** If Tabhand is in more than one profile (say, work and personal), agents see each one and can ask for it: "use my Work profile". Right-click the Tabhand icon in a profile and choose "Name this profile" to give it a name agents know it by, or fill in that profile's Google email. Without a choice, agents use the profile that connected first. Pause Tabhand in one profile and new work goes to a profile where it's on. An agent that asked for a profile stays in it: if you pause that one, the agent hears so rather than signing in somewhere else.
 
 ![Tab badges for each harness](docs/tab-badges.jpg)
 
@@ -99,7 +99,7 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 
 | Tool | What it does |
 |---|---|
-| `browser_open_tab` | Open a background tab in the agent's tab group, optionally loading a URL |
+| `browser_open_tab` | Open a background tab in the agent's tab group, optionally loading a URL, in the Chrome profile it asks for |
 | `browser_navigate` | Load a URL in one of the session's tabs |
 | `browser_snapshot` | Read the page as an accessibility outline; actionable elements get refs like `e123` |
 | `browser_click` | Click an element by ref |
@@ -109,7 +109,8 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 | `browser_upload_file` | Attach files from your computer to a file field, or through the button that opens a file picker (no system dialog appears) |
 | `browser_handle_dialog` | Accept or dismiss a confirm or prompt dialog the page opened (alerts are closed for you) |
 | `browser_screenshot` | Screenshot a tab, even in the background |
-| `browser_list_tabs` | List the session's tabs |
+| `browser_list_tabs` | List the session's tabs, in every Chrome profile |
+| `browser_list_profiles` | List the Chrome profiles that have Tabhand, by name, and whether each is on or paused |
 | `browser_close_tab` | Close one of the session's tabs |
 
 ## Tests
@@ -117,7 +118,8 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - `npm test` runs all of these except the smoke test.
 - `node test/setup.mjs` runs setup, status and remove in a throwaway home folder holding existing agent configs. It checks that Tabhand gets added, that comments and other settings survive, that a second run changes nothing, and that the launcher serves the MCP server.
 - `node test/package.mjs` packs the npm package, installs the tarball, and runs setup from it.
-- `node test/profiles.mjs` runs two bridges against stand-in extensions and checks that pausing one profile sends new work to the other.
+- `node test/profiles.mjs` runs two bridges against stand-in extensions, "Work" and "Personal". It checks that agents see both by name and can choose one, that a chosen profile stays chosen, and that pausing one profile sends new work to the other.
+- `node test/profile-name.mjs` names a throwaway Chrome for Testing profile on the extension's "Name this profile" page and checks that agents see the name.
 - `npm run test:e2e` launches a throwaway Chrome for Testing profile, runs two agents in parallel, and checks they can't reach each other's tabs and that the browser never comes to the front.
 - `node test/new-tabs.mjs` checks that links, `window.open()` and popups from an agent's tab never take over your tab, and that the agent gets the new tab.
 - `node test/upload.mjs` checks that files reach a page byte for byte, through a file field or a button's file picker, including files over Chrome's 1 MB message cap.

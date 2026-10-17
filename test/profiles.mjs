@@ -1,10 +1,12 @@
-// Two Chrome profiles, one paused: new work goes to the profile where Tabhand is on.
+// Two Chrome profiles, "Work" and "Personal": agents see them by name and can choose one, and when
+// one is paused, new work goes to the profile where Tabhand is on.
 //
 // Runs two real native hosts against fake extensions (no Chrome needed). Profile A starts first,
 // so its host runs the bridge; profile B's host stands by. With A paused, an agent's new work
-// should land in B and stay there; work on a tab that lives in A should wait for A; and nothing
-// should hang when there's nowhere to go.
+// should land in B and stay there; work on a tab that lives in A should wait for A; an agent that
+// chose a profile should stay in it; and nothing should hang when there's nowhere to go.
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -12,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { BridgeClient, OLD_BRIDGE } from '../src/bridge-client.mjs';
 import { readMessages, writeMessage } from '../src/native-messaging.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,9 +29,9 @@ const check = (name, ok, detail = '') => {
 const PAUSED = 'The user paused Tabhand in Chrome. Ask them to click the Tabhand toolbar icon to resume.';
 
 /** A Chrome profile: a real host process with a fake extension on the other end of its pipe. */
-function profile(name, firstTab) {
+function profile(name, firstTab, identity) {
   const host = spawn(process.execPath, [path.join(root, 'bin/tabhand.mjs'), 'host', `chrome-extension://${'a'.repeat(32)}/`], { env, stdio: ['pipe', 'pipe', 'inherit'] });
-  const p = { name, host, paused: false, big: false, seen: [], ended: [], state: null, nextTab: firstTab };
+  const p = { name, host, paused: false, big: false, seen: [], ended: [], state: null, nextTab: firstTab, tabs: new Map() };
   readMessages(host.stdout, (message) => {
     if (message.type === 'standby' || message.type === 'active') p.state = message.type;
     if (message.type === 'session-ended') p.ended.push(message.sessionId);
@@ -36,13 +39,17 @@ function profile(name, firstTab) {
     p.seen.push(message.cmd);
     let reply;
     if (p.paused) reply = { ok: false, error: PAUSED };
-    else if (message.cmd === 'open_tab') reply = { ok: true, result: { tabId: p.nextTab++, title: `Opened in ${name}`, url: message.params.url } };
+    else if (message.cmd === 'open_tab') {
+      const tabId = p.nextTab++;
+      p.tabs.set(message.sessionId, [...(p.tabs.get(message.sessionId) ?? []), tabId]);
+      reply = { ok: true, result: { tabId, title: `Opened in ${name}`, url: message.params.url } };
+    }
     else if (message.cmd === 'snapshot') reply = { ok: true, result: { tabId: message.params.tabId, title: `Page in ${name}`, url: 'https://example.com/', snapshot: p.big ? 'x'.repeat(5_500_000) : `- heading "${name}"` } };
-    else if (message.cmd === 'list_tabs') reply = { ok: true, result: { tabs: [] } };
+    else if (message.cmd === 'list_tabs') reply = { ok: true, result: { tabs: (p.tabs.get(message.sessionId) ?? []).map((tabId) => ({ tabId, title: `Page in ${name}`, url: 'https://example.com/' })) } };
     else reply = { ok: false, error: `Unknown command: ${message.cmd}` };
     writeMessage(host.stdin, { type: 'response', id: message.id, ...reply });
   });
-  writeMessage(host.stdin, { type: 'hello', version: '0.8.0' });
+  writeMessage(host.stdin, { type: 'hello', version: '0.9.0', profile: identity });
   return p;
 }
 
@@ -68,10 +75,10 @@ async function agent(label) {
 
 const procs = [];
 try {
-  const a = profile('A', 100);
+  const a = profile('A', 100, { id: 'aaaa1111', name: 'Work' });
   procs.push(a.host);
   check('profile A runs the bridge', await until(() => a.state === 'active'));
-  const b = profile('B', 200);
+  const b = profile('B', 200, { id: 'bbbb2222', name: 'Personal' });
   procs.push(b.host);
   check('profile B stands by', await until(() => b.state === 'standby'));
   await sleep(300); // B's standby hello reaches A
@@ -131,6 +138,62 @@ try {
   await two.client.close();
   check('the profile a session worked in hears it ended', await until(() => b.ended.length > 0, 3000), `B heard ${b.ended.length}`);
 
+  // Agents see the profiles by name, and can choose one.
+  const six = await agent('Six');
+  r = await six.call('browser_list_profiles');
+  check('the agent sees both profiles by name', !r.error && /"Work"[^\n]*: on/.test(r.text) && /"Personal"[^\n]*: on/.test(r.text), r.text);
+  check('and which one its new tabs open in', /"Work"[^\n]*Your new tabs open here/.test(r.text), r.text);
+  r = await six.call('browser_open_tab', { url: 'https://example.com/', profile: 'personal' });
+  check('asking for a profile by name opens the tab there', !r.error && /Opened in B/.test(r.text) && /\(in "Personal"\)/.test(r.text), r.text);
+  r = await six.call('browser_open_tab', { url: 'https://example.com/' });
+  check('and its later tabs open there too', !r.error && /Opened in B/.test(r.text), r.text);
+
+  // The chosen profile gets paused: the agent hears so, rather than ending up in another account.
+  b.paused = true;
+  const aOpens = a.seen.filter((c) => c === 'open_tab').length;
+  r = await six.call('browser_open_tab', { url: 'https://example.com/' });
+  check('when the profile it chose is paused, the agent hears so', r.error && /paused in "Personal", the Chrome profile you chose/.test(r.text), r.text);
+  check('and the tab does not open in the other profile', a.seen.filter((c) => c === 'open_tab').length === aOpens);
+  r = await six.call('browser_list_profiles');
+  check('the list shows it paused and chosen', /"Personal"[^\n]*paused[^\n]*You chose it, so your new tabs can't open/.test(r.text) && /"Work"[^\n]*: on/.test(r.text), r.text);
+  b.paused = false;
+
+  r = await six.call('browser_open_tab', { url: 'https://example.com/', profile: 'Client' });
+  check("asking for a profile that isn't there names the ones that are", r.error && /No Chrome profile/.test(r.text) && /"Work"/.test(r.text) && /"Personal"/.test(r.text), r.text);
+
+  // The user renames a profile.
+  writeMessage(b.host.stdin, { type: 'profile', profile: { id: 'bbbb2222', name: 'Home' } });
+  await sleep(200);
+  r = await six.call('browser_list_profiles');
+  check('a renamed profile shows its new name', /"Home"/.test(r.text) && !/"Personal"/.test(r.text), r.text);
+  r = await six.call('browser_open_tab', { url: 'https://example.com/', profile: 'work' });
+  check('the agent can switch profiles', !r.error && /Opened in A/.test(r.text), r.text);
+  const tabInWork = Number(/^Tab (\d+):/m.exec(r.text)?.[1]);
+  r = await six.call('browser_list_tabs');
+  check('its tab list covers both profiles', /in "Work"/.test(r.text) && /in "Home"/.test(r.text) && (r.text.match(/^Tab /gm) ?? []).length === 3, r.text);
+  a.paused = true;
+  r = await six.call('browser_list_tabs');
+  check('with one paused, the list says how many tabs are there', !r.error && /One more tab is in "Work", where Tabhand is paused/.test(r.text), r.text);
+  r = await six.call('browser_snapshot', { tabId: tabInWork });
+  check('work on a tab in a paused profile says which profile it is in', r.error && /This tab is in "Work"/.test(r.text), r.text);
+  a.paused = false;
+
+  // An agent that chose the other profile, before it goes away (below).
+  const seven = await agent('Seven');
+  r = await seven.call('browser_open_tab', { url: 'https://example.com/', profile: 'bbbb2222' });
+  check('a profile can be chosen by its id', !r.error && /Opened in B/.test(r.text), r.text);
+
+  // A session whose agent chose a profile before the bridge moved here says so as it connects.
+  process.env.TABHAND_DATA_DIR = dataDir;
+  const moved = new BridgeClient({ sessionId: crypto.randomUUID(), label: 'Eight' });
+  moved.profile = 'bbbb2222';
+  const listed = await moved.request('profiles');
+  const home = listed.profiles.find((p) => p.id === 'bbbb2222');
+  check('a choice carried over from before the bridge moved is listed as chosen', home?.chosen && home.newTabs && !listed.chosenMissing, JSON.stringify(listed));
+  const opened = await moved.request('open_tab', { url: 'https://example.com/' });
+  check('and its new tabs open there, and say which profile by id', /Opened in B/.test(opened.title) && opened.profileId === 'bbbb2222', JSON.stringify(opened));
+  moved.close();
+
   // Both paused: a clear answer, quickly, rather than a hang.
   a.paused = true;
   b.paused = true;
@@ -151,9 +214,44 @@ try {
   const five = await agent('Five');
   r = await five.call('browser_open_tab', { url: 'https://example.com/' });
   check('an older standby is skipped, not waited on', r.error && /paused/i.test(r.text) && r.ms < 2000, `${r.ms} ms: ${r.text}`);
+  r = await five.call('browser_list_profiles');
+  check('and listed as needing Chrome to restart', /Unnamed[^\n]*older Tabhand helper/.test(r.text), r.text);
+  r = await seven.call('browser_open_tab', { url: 'https://example.com/' });
+  check('an agent whose chosen profile went away hears so', r.error && /can't reach "Home", the Chrome profile you chose/.test(r.text), r.text);
   old.destroy();
 
-  for (const c of [one, three, four, five]) await c.client.close().catch(() => {});
+  for (const c of [one, three, four, five, six, seven]) await c.client.close().catch(() => {});
+
+  // An older bridge, which can't tell profiles apart, took over: an agent that chose a profile isn't
+  // sent to whichever profile that bridge runs in.
+  const oldDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tabhand-old-bridge-'));
+  process.env.TABHAND_DATA_DIR = oldDir;
+  fs.writeFileSync(path.join(oldDir, 'token'), 'old-token');
+  const asked = [];
+  const oldBridge = net.createServer((socket) => {
+    let buffer = '';
+    socket.on('data', (data) => {
+      buffer += data;
+      for (let i; (i = buffer.indexOf('\n')) >= 0; buffer = buffer.slice(i + 1)) {
+        const message = JSON.parse(buffer.slice(0, i));
+        if (message.type === 'hello') socket.write(JSON.stringify({ type: 'welcome' }) + '\n');
+        if (message.type === 'request') {
+          asked.push(message.cmd);
+          socket.write(JSON.stringify({ type: 'response', id: message.id, ok: true, result: { tabId: 9, title: 'Old', url: '' } }) + '\n');
+        }
+      }
+    });
+  });
+  await new Promise((done) => oldBridge.listen(path.join(oldDir, 'bridge.sock'), done));
+  const chose = new BridgeClient({ sessionId: crypto.randomUUID(), label: 'Nine' });
+  chose.profile = 'aaaa1111';
+  const answer = await chose.request('open_tab', { url: 'https://example.com/' }).then(() => 'opened', (e) => e.message);
+  check('with an older bridge, an agent that chose a profile opens nothing', answer === OLD_BRIDGE && !asked.includes('open_tab'), answer);
+  const onTab = await chose.request('snapshot', { tabId: 9 }).then(() => 'answered', (e) => e.message);
+  check('but its work on a tab it has still goes through', onTab === 'answered', onTab);
+  chose.close();
+  oldBridge.close();
+  fs.rmSync(oldDir, { recursive: true, force: true });
 } catch (error) {
   check('runs without throwing', false, error.stack);
 } finally {
