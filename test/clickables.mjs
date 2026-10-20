@@ -1,0 +1,78 @@
+// Can an agent click controls a page builds from plain elements (a div with a click handler), like
+// Product Hunt's launch tags, radio cards and date tiles? They have no role, so Chrome's
+// accessibility tree, and a snapshot made from it, gives them no ref.
+//
+//   node test/clickables.mjs
+
+import crypto from 'node:crypto';
+import http from 'node:http';
+import { BridgeClient } from '../src/bridge-client.mjs';
+import { launchTestBrowser } from './harness.mjs';
+
+const page = `<!doctype html><title>Div controls</title>
+<style>
+  body { font: 16px sans-serif; padding: 40px }
+  .control { cursor: pointer; display: inline-block; margin: 6px; padding: 8px 12px; border: 1px solid #ccc; border-radius: 8px }
+</style>
+<body>
+  <div class="control" data-pick="tag"><span>Chrome Extensions</span></div>
+  <div class="control" data-pick="radio"><span class="dot"></span> I worked on this product</div>
+  <div class="control" data-pick="date"><b>19</b> <small>Oct</small></div>
+  <div class="control" data-pick="icon"><img alt="Developer Tools" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="> Developer Tools</div>
+  <div data-pick="plain" style="margin: 6px">Plain click target</div>
+  <p>Picked: <span id="picked">nothing</span></p>
+  <script>
+    for (const control of document.querySelectorAll('[data-pick]')) {
+      control.addEventListener('click', () => { document.getElementById('picked').textContent = control.dataset.pick; });
+    }
+  </script>
+</body>`;
+const server = http.createServer((_request, response) => {
+  response.writeHead(200, { 'content-type': 'text/html' });
+  response.end(page);
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+const browser = await launchTestBrowser();
+const bridge = new BridgeClient({ sessionId: crypto.randomUUID(), label: 'Claude', theme: 'claude' });
+const results = [];
+const check = (name, ok, detail) => {
+  results.push(ok);
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  (${detail})`);
+};
+const picked = async (tabId) => /Picked:\s*(?:- text: )?(\w+)/.exec((await bridge.request('snapshot', { tabId })).snapshot.replace(/\n\s*/g, ' '))?.[1];
+
+try {
+  if (!browser.connected) throw new Error('The test browser did not connect.');
+  const { tabId } = await bridge.request('open_tab', { url: `http://127.0.0.1:${server.address().port}/` });
+  const { snapshot } = await bridge.request('snapshot', { tabId });
+
+  for (const [name, label, pick] of [
+    ['a launch-tag row', 'Chrome Extensions', 'tag'],
+    ['a custom radio card', 'I worked on this product', 'radio'],
+    ['a date tile', '19 Oct', 'date'],
+    ['a row whose icon repeats its label (named once)', 'Developer Tools', 'icon'],
+  ]) {
+    const ref = new RegExp(`clickable "${label}" \\[ref=(e\\d+)\\]`).exec(snapshot)?.[1];
+    if (ref) await bridge.request('click', { tabId, ref });
+    const now = await picked(tabId);
+    check(`${name} gets a ref, and clicking it works`, Boolean(ref) && now === pick, `ref: ${ref ?? 'none'}, picked: ${now}`);
+  }
+
+  const result = await bridge.request('click', { tabId, text: 'Plain click target' });
+  const now = await picked(tabId);
+  check('an element with no ref can be clicked by its text', now === 'plain', `picked: ${now}, notes: ${JSON.stringify(result.notes ?? [])}`);
+
+  const missing = await bridge.request('click', { tabId, text: 'Nothing says this' }).then(
+    () => 'clicked',
+    (error) => error.message,
+  );
+  check('text that is nowhere on the page is an error, not a click', /no element/i.test(missing), missing);
+} catch (error) {
+  check('test run', false, error.message);
+} finally {
+  bridge.close();
+  server.close();
+  await browser.close();
+  process.exit(results.every(Boolean) ? 0 : 1);
+}

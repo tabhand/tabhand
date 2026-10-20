@@ -11,11 +11,19 @@ export const OLD_BRIDGE =
   "Tabhand's helper in Chrome is from before it knew about Chrome profiles. Ask the user to quit Chrome and open it again, which restarts it.";
 
 export class BridgeClient {
-  /** @param {{sessionId: string, label: string, theme?: string}} options */
-  constructor({ sessionId, label, theme = 'agent' }) {
+  /**
+   * conversation, or else parent and cwd: who the agent is (its conversation, or the process that
+   * runs it and its folder). If the app restarts this MCP server, the new one gets the old session's
+   * tabs back by them.
+   * @param {{sessionId: string, label: string, theme?: string, conversation?: string, parent?: number, cwd?: string}} options
+   */
+  constructor({ sessionId, label, theme = 'agent', conversation, parent, cwd }) {
     this.sessionId = sessionId;
     this.label = label;
     this.theme = theme;
+    this.conversation = conversation;
+    this.parent = parent;
+    this.cwd = cwd;
     /** @type {net.Socket | null} */
     this.socket = null;
     /** @type {Promise<void> | null} */
@@ -43,7 +51,8 @@ export class BridgeClient {
       let welcomed = false;
       socket.setEncoding('utf8');
       socket.once('connect', () => {
-        socket.write(JSON.stringify({ type: 'hello', token, sessionId: this.sessionId, label: this.label, theme: this.theme, profile: this.profile ?? undefined }) + '\n');
+        const hello = { type: 'hello', token, sessionId: this.sessionId, label: this.label, theme: this.theme, profile: this.profile ?? undefined, conversation: this.conversation, parent: this.parent, cwd: this.cwd };
+        socket.write(JSON.stringify(hello) + '\n');
       });
       socket.on('data', (data) => {
         buffer += data;

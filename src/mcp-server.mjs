@@ -47,7 +47,7 @@ Use it whenever a task needs a real browser: pages behind a login (email, dashbo
 
 How it works:
 - browser_open_tab opens a tab in your own tab group; you can only reach tabs you opened and tabs those pages open.
-- browser_snapshot reads the page and labels what you can act on with refs like e12; browser_click and browser_type take those refs. Take a new snapshot after the page changes.
+- browser_snapshot reads the page and labels what you can act on with refs like e12; browser_click and browser_type take those refs. Take a new snapshot after the page changes. If something you can see has no ref, browser_click can take its text instead.
 - Prefer snapshots for reading; use browser_screenshot to check visuals.
 - Close your tabs with browser_close_tab when you're done.
 - The user may have Tabhand in several Chrome profiles (say, work and personal), each signed in to different accounts. When they mention one, or a tool says Tabhand is paused, call browser_list_profiles, then pass the profile to browser_open_tab. If it's unclear which profile they mean, ask them.
@@ -71,7 +71,11 @@ export async function runMcpServer({ label, theme } = {}) {
   const bridgeFor = () => {
     if (!bridge) {
       const harness = detectHarness({ clientInfo: server.server.getClientVersion(), label, theme });
-      bridge = new BridgeClient({ sessionId: crypto.randomUUID(), ...harness });
+      // Who this agent is, so a restarted MCP server gets its tabs back: the conversation, where the
+      // app says (Claude Code does, and keeps it when it resumes one in a new process), or else the
+      // app process and folder.
+      const conversation = process.env.CLAUDE_CODE_SESSION_ID;
+      bridge = new BridgeClient({ sessionId: crypto.randomUUID(), ...harness, conversation, parent: process.ppid, cwd: process.cwd() });
     }
     return bridge;
   };
@@ -154,7 +158,7 @@ export async function runMcpServer({ label, theme } = {}) {
 
   tool(
     'browser_snapshot',
-    'Read the page as an accessibility outline (headings, text, links, buttons, fields). Elements you can act on carry a ref like e123 for browser_click and browser_type. Refs stop working after the page changes, so take a new snapshot then.',
+    'Read the page as an accessibility outline (headings, text, links, buttons, fields). Elements you can act on carry a ref like e123 for browser_click and browser_type; plain elements the page made clickable show as "clickable". Refs stop working after the page changes, so take a new snapshot then.',
     { tabId },
     async (args) => {
       const result = await call('snapshot', args);
@@ -165,9 +169,17 @@ export async function runMcpServer({ label, theme } = {}) {
 
   tool(
     'browser_click',
-    'Click an element by its ref from browser_snapshot. Waits for any page load the click starts. Links and popups that open a new tab stay in the background, join this session, and are listed in the result. Clicking an option of a dropdown chooses it.',
-    { tabId, ref: z.string().describe('Element ref from browser_snapshot, e.g. e123.') },
+    'Click an element by its ref from browser_snapshot, or else by the text it shows. Waits for any page load the click starts. Links and popups that open a new tab stay in the background, join this session, and are listed in the result. Clicking an option of a dropdown chooses it.',
+    {
+      tabId,
+      ref: z.string().optional().describe('Element ref from browser_snapshot, e.g. e123.'),
+      text: z
+        .string()
+        .optional()
+        .describe("Instead of a ref: the visible text of the element to click, for something the snapshot gives no ref but you can see in a screenshot."),
+    },
     async (args) => {
+      if (!args.ref && !args.text) throw new Error('Give the ref of the element to click, from browser_snapshot, or its text.');
       const result = await call('click', args);
       return text(tabLine(result) + navigatedNote(result));
     },

@@ -101,8 +101,8 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 |---|---|
 | `browser_open_tab` | Open a background tab in the agent's tab group, optionally loading a URL, in the Chrome profile it asks for |
 | `browser_navigate` | Load a URL in one of the session's tabs |
-| `browser_snapshot` | Read the page as an accessibility outline; actionable elements get refs like `e123` |
-| `browser_click` | Click an element by ref |
+| `browser_snapshot` | Read the page as an accessibility outline; actionable elements, including ones a page made clickable out of plain elements, get refs like `e123` |
+| `browser_click` | Click an element by ref, or by the text it shows |
 | `browser_type` | Type into a field, optionally clearing it first and pressing Enter after, or choose a dropdown option by its text |
 | `browser_press_key` | Press a key or combination such as `Shift+Tab` |
 | `browser_scroll` | Scroll up or down |

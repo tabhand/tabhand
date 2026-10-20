@@ -12,6 +12,10 @@ import { HOST_NAME, nativeHostDirs } from '../src/paths.mjs';
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Agents a test starts are its own, not part of a conversation that may be running the test (an
+// MCP server would otherwise take Claude Code's conversation id from the environment).
+delete process.env.CLAUDE_CODE_SESSION_ID;
+
 /** Name of the app in front on macOS. */
 export function frontmostApp() {
   try {
@@ -21,6 +25,40 @@ export function frontmostApp() {
   } catch {
     return '?';
   }
+}
+
+/**
+ * A DevTools connection to the whole test browser, for doing what the user would (opening a tab of
+ * their own). The browser has to be started with --remote-debugging-port=0.
+ */
+export async function browserDevTools(profile) {
+  const portFile = path.join(profile, 'DevToolsActivePort');
+  for (let i = 0; i < 50 && !fs.existsSync(portFile); i++) await sleep(100);
+  const [port, socketPath] = fs.readFileSync(portFile, 'utf8').split('\n');
+  const socket = new WebSocket(`ws://127.0.0.1:${port}${socketPath}`);
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = reject;
+  });
+  let nextId = 0;
+  const waiting = new Map();
+  socket.onmessage = ({ data }) => {
+    const message = JSON.parse(data);
+    const settle = waiting.get(message.id);
+    if (!settle) return;
+    waiting.delete(message.id);
+    if (message.error) settle.reject(new Error(message.error.message));
+    else settle.resolve(message.result);
+  };
+  return {
+    send: (method, params = {}) =>
+      new Promise((resolve, reject) => {
+        const id = ++nextId;
+        waiting.set(id, { resolve, reject });
+        socket.send(JSON.stringify({ id, method, params }));
+      }),
+    close: () => socket.close(),
+  };
 }
 
 /** Starts a throwaway browser running Tabhand, plus any other unpacked extensions given. */

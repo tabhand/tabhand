@@ -1,12 +1,12 @@
 # Tabhand privacy policy
 
-Effective October 17, 2026.
+Effective October 17, 2026. Updated October 20, 2026.
 
 Tabhand is an open-source Chrome extension and command-line tool. It lets AI agents that you run on your own computer, such as Claude Code or Codex, use your Chrome.
 
 ## What Tabhand handles
 
-- **Only the agent's own tabs.** When one of your agents uses Tabhand, the extension opens tabs for that agent. It reads those tabs' pages (text, page structure, screenshots) and makes the clicks and typing the agent asks for. It can't see or touch any other tab: not yours, and not another agent's.
+- **Only the agent's own tabs.** When one of your agents uses Tabhand, the extension opens tabs for that agent. It reads those tabs' pages (text, page structure, screenshots) and makes the clicks and typing the agent asks for. It doesn't read or act on any other tab: not yours, and not another agent's. The one thing it checks is a new tab's first web address, as the tab opens right after an agent's page asked for one, to tell whether that page opened it. It doesn't keep that address or send it anywhere.
 - **It stays on your computer.** Page content goes from the extension to the Tabhand helper on your computer, through Chrome's native messaging. The helper hands it to the agent that asked for it.
 - **Your agent's own policy applies after that.** What the agent does with the content, such as sending it to its AI provider, is covered by that agent's privacy policy.
 - **Files are uploaded only on request.** When an agent asks Tabhand to upload files, Tabhand reads them from your computer and attaches them to the page the agent is working in.

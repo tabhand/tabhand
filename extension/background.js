@@ -235,7 +235,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       waiter.resolve(params);
     }
   }
-  if (method === 'Page.windowOpen') expectedOpens.push({ openerTabId: source.tabId, at: Date.now() });
+  // A window opened blank is matched by timing (see agentOpener), so it only counts after a click:
+  // Chrome blocks the others anyway.
+  if (method === 'Page.windowOpen' && (params.url !== 'about:blank' || params.userGesture)) {
+    expectedOpens.push({ openerTabId: source.tabId, url: params.url, at: Date.now() });
+  }
   if (method === 'Page.javascriptDialogOpening') void onDialog(source.tabId, params);
   if (method === 'Page.javascriptDialogClosed') dialogs.delete(source.tabId);
   // A new page has no cursor yet: put it back where the agent left it.
@@ -336,7 +340,7 @@ async function withDialogs(sessionId, tabId, cmd, run) {
 function withNotes(tabId, result) {
   const notes = dialogNotes.get(tabId);
   dialogNotes.delete(tabId);
-  return notes && result && typeof result === 'object' ? { ...result, notes } : result;
+  return notes && result && typeof result === 'object' ? { ...result, notes: [...(result.notes ?? []), ...notes] } : result;
 }
 
 // ---------------------------------------------------------------- tabs that pages open
@@ -346,12 +350,13 @@ const activeHistory = new Map();
 /** The Chrome window that had focus before the current one (WINDOW_ID_NONE: another app had it). */
 let focusedWindow = chrome.windows.WINDOW_ID_NONE;
 let previousFocusedWindow = chrome.windows.WINDOW_ID_NONE;
-/** Page.windowOpen events from agent tabs, waiting to be matched with the tab Chrome creates */
+/** Windows agent tabs asked for (Page.windowOpen, or a link Tabhand opens), each with its URL,
+ * waiting to be matched with the tab Chrome creates */
 const expectedOpens = [];
 /** opener tabId -> tabs it opened since the agent last asked, reported with the next result */
 const openedBy = new Map();
 const OPEN_MATCH_MS = 3_000;
-const ADOPT_WINDOW_MS = 10_000;
+const BLANK_MATCH_MS = 1_000;
 
 const sessionOfTab = (tabId) => Object.values(sessions).find((session) => session.tabIds.includes(tabId));
 
@@ -378,23 +383,51 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
   focusedWindow = windowId;
 });
 
-/** Which agent tab opened this new tab, if any. Chrome's openerTabId is unreliable for background
- * tabs (it often names the user's active tab), so the debugger's windowOpen event decides first. */
-function agentOpener(tab) {
+/**
+ * The URL a new tab opened with. The debugger's list of targets has it for every tab within a few
+ * milliseconds, about:blank and chrome://newtab/ included (the tabs API hides those), and keeps it
+ * until the tab's first page loads.
+ */
+async function openingUrl(tabId) {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const target = (await chrome.debugger.getTargets()).find((target) => target.tabId === tabId);
+    if (target?.url) return target.url;
+    await sleep(25);
+  }
+  return '';
+}
+
+/**
+ * Which agent tab opened this new tab, if any: only one whose page just asked for a window with this
+ * very URL. Nothing else tells the agent's new tabs from the user's. Chrome's openerTabId names
+ * whichever tab was in front, and a popup Chrome blocks is still announced, with no tab to follow.
+ * When in doubt, the tab stays the user's.
+ */
+async function agentOpener(tab) {
   const now = Date.now();
   while (expectedOpens.length && now - expectedOpens[0].at > OPEN_MATCH_MS) expectedOpens.shift();
-  const expected = expectedOpens.shift();
-  if (expected && sessionOfTab(expected.openerTabId)) return expected.openerTabId;
-  const opener = tab.openerTabId;
-  if (opener !== undefined && sessionOfTab(opener) && now - (lastUsed.get(opener) ?? 0) < ADOPT_WINDOW_MS) return opener;
-  return undefined;
+  if (!expectedOpens.length) return undefined;
+  const url = await openingUrl(tab.id);
+  // A tab Tabhand opened itself (open_tab) already has its session.
+  if (sessionOfTab(tab.id)) return undefined;
+  let index = expectedOpens.findIndex((expected) => expected.url === url);
+  // A window opened blank can be on its way to the page it was opened for already. It still has to
+  // follow at once, and a page has to have opened it: a tab the user opens from the address bar or
+  // a bookmark has its URL from the start.
+  if (index < 0 && !tab.pendingUrl && /^https?:/.test(url)) {
+    index = expectedOpens.findIndex((expected) => expected.url === 'about:blank' && now - expected.at < BLANK_MATCH_MS);
+  }
+  if (index < 0) return undefined;
+  const [expected] = expectedOpens.splice(index, 1);
+  return sessionOfTab(expected.openerTabId) ? expected.openerTabId : undefined;
 }
 
 // Links, window.open() and popups from an agent's tab belong to that agent: they join its tab
 // group, and they must never take the user's place.
 chrome.tabs.onCreated.addListener(async (tab) => {
   await ready;
-  const openerTabId = agentOpener(tab);
+  const openerTabId = await agentOpener(tab);
   if (openerTabId === undefined) return;
   // Chrome may have just come to the front for this tab or popup; the helper gives the front back.
   port?.postMessage({ type: 'opened' });
@@ -761,6 +794,50 @@ async function showCursor(tabId, sessionId, x, y, { click = false, animate } = {
   } catch {}
 }
 
+/**
+ * Moves the agent's cursor onto an element for a step that doesn't click there itself (choosing a
+ * dropdown option, pressing a key), so the user sees where it happens. Only for show: a cursor that
+ * can't get there never stops the step.
+ */
+async function cursorOnto(tabId, sessionId, backendNodeId, { click = false } = {}) {
+  if (!backendNodeId) return;
+  try {
+    const { x, y } = await elementCenter(tabId, backendNodeId);
+    await showCursor(tabId, sessionId, x, y, { click });
+  } catch {}
+}
+
+/** The backend node id of the element a page expression or function (called on objectId) gives. */
+async function elementFrom(tabId, { expression, objectId, functionDeclaration }) {
+  try {
+    const { result } = objectId
+      ? await send(tabId, 'Runtime.callFunctionOn', { objectId, functionDeclaration })
+      : await send(tabId, 'Runtime.evaluate', { expression });
+    if (!result?.objectId) return null;
+    const { node } = await send(tabId, 'DOM.describeNode', { objectId: result.objectId });
+    return node.backendNodeId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The element a key press goes to: the focused one (looking into shadow roots), if not the page. */
+const FOCUSED_ELEMENT = `(() => {
+  let element = document.activeElement;
+  while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+  return element && element !== document.body && element !== document.documentElement ? element : null;
+})()`;
+
+/** The dropdown an option belongs to, which is where the cursor goes to choose it. */
+async function dropdownOf(tabId, backendNodeId) {
+  try {
+    const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId });
+    return await elementFrom(tabId, { objectId: object.objectId, functionDeclaration: 'function () { return this.closest("select"); }' });
+  } catch {
+    return null;
+  }
+}
+
 async function setTyping(tabId, typing) {
   const world = cursorWorlds.get(tabId);
   if (!world || world.started !== loads.get(tabId)?.started) return;
@@ -769,21 +846,25 @@ async function setTyping(tabId, typing) {
   } catch {}
 }
 
-/** Types text; while the user watches, at a readable pace with the cursor's typing dots. */
+/**
+ * Types text; while the user watches, at a readable pace with the cursor's typing dots. The last
+ * character goes in as a real key press: some pages only read a field when a key goes up, and would
+ * otherwise keep what the field held before.
+ */
 async function insertText(tabId, text) {
-  if (!(await watched(tabId)) || text.length > 400) {
-    await insertChunk(tabId, text);
-    return;
-  }
-  await setTyping(tabId, true);
+  const characters = [...text];
+  const last = /^[^\r\n\t]$/u.test(characters.at(-1) ?? '') ? characters.pop() : '';
+  const slow = (await watched(tabId)) && text.length <= 400;
+  if (slow) await setTyping(tabId, true);
   try {
-    const chunk = Math.max(1, Math.ceil(text.length / 45));
-    for (let i = 0; i < text.length; i += chunk) {
-      await insertChunk(tabId, text.slice(i, i + chunk));
-      await sleep(28);
+    const chunk = slow ? Math.max(1, Math.ceil(characters.length / 45)) : characters.length;
+    for (let i = 0; i < characters.length; i += chunk) {
+      await insertChunk(tabId, characters.slice(i, i + chunk).join(''));
+      if (slow) await sleep(28);
     }
+    if (last) await insertChunk(tabId, last, { asKey: true });
   } finally {
-    await setTyping(tabId, false);
+    if (slow) await setTyping(tabId, false);
   }
 }
 
@@ -794,12 +875,51 @@ const FOCUSED_TEXT = `(() => {
   return element ? String(element.value ?? element.textContent ?? '') : '';
 })()`;
 
+/** The focused field's text, and whether it's a password field. */
+const FOCUSED_FIELD = `(() => {
+  let element = document.activeElement;
+  while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+  return { text: element ? String(element.value ?? element.textContent ?? '') : '', password: element?.type === 'password' };
+})()`;
+
+/** A note for the agent when the field doesn't hold what it typed: the page trimmed, reformatted or
+ * refused it. */
+async function typedNotes(tabId, typed) {
+  try {
+    const { result } = await send(tabId, 'Runtime.evaluate', { expression: FOCUSED_FIELD, returnByValue: true });
+    const { text, password } = result.value;
+    // Fields drop line breaks, and rich editors keep spaces as non-breaking ones.
+    const plain = (value) => value.replace(/\u00a0/g, ' ').replace(/[\r\n]+/g, '');
+    if (plain(text).includes(plain(typed))) return [];
+    if (password) return ["The password field doesn't hold what was typed: the page changed or refused it."];
+    const shown = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+    return [`The field now reads "${shown}", not what was typed: the page changed or refused the text.`];
+  } catch {
+    return [];
+  }
+}
+
+/** One character typed as a real key: down (which types it), then up. */
+async function typeKey(tabId, character) {
+  const upper = character.toUpperCase();
+  const letter = upper.length === 1 && upper >= 'A' && upper <= 'Z';
+  const digit = character >= '0' && character <= '9';
+  const event = {
+    key: character,
+    code: letter ? `Key${upper}` : digit ? `Digit${character}` : undefined,
+    windowsVirtualKeyCode: letter || digit ? upper.charCodeAt(0) : 0,
+  };
+  await send(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...event, text: character });
+  await send(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...event });
+}
+
 /** Types into the focused field; if a password manager's menu cuts it short, types it again only
  * if it didn't land. */
-async function insertChunk(tabId, text) {
+async function insertChunk(tabId, text, { asKey = false } = {}) {
   const before = await send(tabId, 'Runtime.evaluate', { expression: FOCUSED_TEXT, returnByValue: true }).catch(() => null);
   try {
-    await send(tabId, 'Input.insertText', { text });
+    if (asKey) await typeKey(tabId, text);
+    else await send(tabId, 'Input.insertText', { text });
   } catch (error) {
     if (!(error instanceof Interrupted) || !before) throw error;
     const after = await send(tabId, 'Runtime.evaluate', { expression: FOCUSED_TEXT, returnByValue: true });
@@ -1129,6 +1249,66 @@ function refToNodeId(ref) {
   return Number(match[1]);
 }
 
+/**
+ * Plain elements a page made clickable without saying so (a div with a click handler), which the
+ * accessibility tree has no role for: those its style gives the pointing hand. Only the outermost
+ * of each, since what's inside inherits the cursor.
+ */
+async function pointerElements(tabId) {
+  const found = new Set();
+  try {
+    const { documents, strings } = await send(tabId, 'DOMSnapshot.captureSnapshot', { computedStyles: ['cursor'] });
+    const pointer = strings.indexOf('pointer');
+    if (pointer < 0) return found;
+    for (const { nodes, layout } of documents) {
+      const pointing = new Map(layout.nodeIndex.map((node, i) => [node, layout.styles[i]?.[0] === pointer]));
+      for (const [node, isPointer] of pointing) {
+        if (!isPointer || nodes.nodeType[node] !== 1) continue;
+        let parent = nodes.parentIndex[node];
+        while (parent >= 0 && !pointing.has(parent)) parent = nodes.parentIndex[parent];
+        if (parent < 0 || !pointing.get(parent)) found.add(nodes.backendNodeId[node]);
+      }
+    }
+  } catch {}
+  return found;
+}
+
+/** Finds the element showing some text, for clicks on things a snapshot gives no ref: the innermost
+ * visible one whose text is exactly it (ignoring case and spacing), or else has it. Returns
+ * [element, how many matched]. */
+const ELEMENT_BY_TEXT = `function (wanted) {
+  const plain = (text) => String(text ?? '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const target = plain(wanted);
+  const elements = [...document.querySelectorAll('body *')].filter((element) => !['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'].includes(element.tagName));
+  const visible = (element) => {
+    const box = element.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden';
+  };
+  const innermost = (test) => {
+    const matches = elements.filter((element) => test(plain(element.textContent)));
+    return matches.filter((element) => !matches.some((other) => other !== element && element.contains(other))).filter(visible);
+  };
+  let found = innermost((text) => text === target);
+  if (!found.length) found = innermost((text) => text.includes(target));
+  return [found[0] ?? null, found.length];
+}`;
+
+async function elementByText(tabId, text) {
+  const objectGroup = 'tabhand-find';
+  try {
+    const { result: list } = await send(tabId, 'Runtime.evaluate', { expression: `(${ELEMENT_BY_TEXT})(${JSON.stringify(text)})`, objectGroup });
+    const item = (index, byValue) =>
+      send(tabId, 'Runtime.callFunctionOn', { objectId: list.objectId, functionDeclaration: `function () { return this[${index}]; }`, returnByValue: byValue, objectGroup });
+    const { result: count } = await item(1, true);
+    if (!count.value) throw new Error(`No element on the page shows "${text}". Take a new browser_snapshot to check the wording.`);
+    const { result: element } = await item(0, false);
+    const { node } = await send(tabId, 'DOM.describeNode', { objectId: element.objectId });
+    return { backendNodeId: node.backendNodeId, count: count.value };
+  } finally {
+    send(tabId, 'Runtime.releaseObjectGroup', { objectGroup }).catch(() => {});
+  }
+}
+
 async function elementCenter(tabId, backendNodeId) {
   try {
     await send(tabId, 'DOM.scrollIntoViewIfNeeded', { backendNodeId });
@@ -1247,16 +1427,26 @@ const handlers = {
   async snapshot(sessionId, _label, { tabId }) {
     await ownedTab(sessionId, tabId);
     const { nodes } = await send(tabId, 'Accessibility.getFullAXTree');
-    return { ...(await describe(tabId)), snapshot: renderSnapshot(nodes) };
+    return { ...(await describe(tabId)), snapshot: renderSnapshot(nodes, { clickable: await pointerElements(tabId) }) };
   },
 
-  async click(sessionId, _label, { tabId, ref, debugCursor }) {
+  async click(sessionId, _label, { tabId, ref, text, debugCursor }) {
     await ownedTab(sessionId, tabId);
-    const backendNodeId = refToNodeId(ref);
+    let backendNodeId;
+    const notes = [];
+    if ((ref === undefined || ref === null || ref === '') && text) {
+      const found = await elementByText(tabId, String(text));
+      backendNodeId = found.backendNodeId;
+      if (found.count > 1) notes.push(`${found.count} elements show "${text}"; this clicked the first. To click another, give more of its text, or its ref from browser_snapshot.`);
+    } else {
+      backendNodeId = refToNodeId(ref);
+    }
+    const noted = (result) => (notes.length ? { ...result, notes } : result);
     const { node } = await send(tabId, 'DOM.describeNode', { backendNodeId }).catch(() => ({ node: {} }));
     if (node.nodeName === 'OPTION') {
+      await cursorOnto(tabId, sessionId, await dropdownOf(tabId, backendNodeId), { click: true });
       const chose = await chooseOption(tabId, backendNodeId);
-      if (chose !== null) return { ...(await describe(tabId)), navigated: false, chose, opened: await takeOpened(tabId) };
+      if (chose !== null) return noted({ ...(await describe(tabId)), navigated: false, chose, opened: await takeOpened(tabId) });
     }
     const { x, y } = await elementCenter(tabId, backendNodeId);
     await showCursor(tabId, sessionId, x, y, { click: true, animate: debugCursor || undefined });
@@ -1265,18 +1455,18 @@ const handlers = {
     const link = await newTabLink(tabId, backendNodeId);
     if (link && /^https?:/i.test(link)) {
       const { windowId, index } = await chrome.tabs.get(tabId);
-      expectedOpens.push({ openerTabId: tabId, at: Date.now() });
+      expectedOpens.push({ openerTabId: tabId, url: link, at: Date.now() });
       await chrome.tabs.create({ url: link, active: false, windowId, index: index + 1, openerTabId: tabId });
       await waitUntil(() => openedBy.has(tabId), 2_000);
-      return { ...(await describe(tabId)), navigated: false, opened: await takeOpened(tabId) };
+      return noted({ ...(await describe(tabId)), navigated: false, opened: await takeOpened(tabId) });
     }
     // Other links into a new tab get the Cmd/Ctrl-click treatment, so Chrome opens them in the background.
-    if (link) expectedOpens.push({ openerTabId: tabId, at: Date.now() });
+    if (link) expectedOpens.push({ openerTabId: tabId, url: link, at: Date.now() });
     const modifiers = link ? await backgroundTabModifier : 0;
     const settle = watchNavigation(tabId);
     await pressAt(tabId, x, y, modifiers);
     const navigated = await settle();
-    return { ...(await describe(tabId)), navigated, opened: await takeOpened(tabId) };
+    return noted({ ...(await describe(tabId)), navigated, opened: await takeOpened(tabId) });
   },
 
   // Files arrive in pieces: messages to an extension are capped at 1 MB.
@@ -1316,6 +1506,8 @@ const handlers = {
     const settle = watchNavigation(tabId);
     if (ref !== undefined && ref !== null && ref !== '') {
       const backendNodeId = refToNodeId(ref);
+      const { node } = await send(tabId, 'DOM.describeNode', { backendNodeId }).catch(() => ({ node: {} }));
+      if (node.nodeName === 'SELECT') await cursorOnto(tabId, sessionId, backendNodeId, { click: true });
       const chose = await chooseOption(tabId, backendNodeId, text);
       if (chose !== null) {
         const navigated = await settle();
@@ -1349,11 +1541,14 @@ const handlers = {
     if (text) await insertText(tabId, String(text));
     if (submit) await pressKey(tabId, 'Enter');
     const navigated = await settle();
-    return { ...(await describe(tabId)), navigated, opened: await takeOpened(tabId) };
+    // After Enter a page may well empty the field (a chat box, a search), so only check without it.
+    const notes = text && !submit && !navigated ? await typedNotes(tabId, String(text)) : [];
+    return { ...(await describe(tabId)), navigated, opened: await takeOpened(tabId), ...(notes.length ? { notes } : {}) };
   },
 
   async press_key(sessionId, _label, { tabId, key }) {
     await ownedTab(sessionId, tabId);
+    await cursorOnto(tabId, sessionId, await elementFrom(tabId, { expression: FOCUSED_ELEMENT }));
     const settle = watchNavigation(tabId);
     await pressKey(tabId, key);
     const navigated = await settle();
@@ -1421,8 +1616,9 @@ const handlers = {
     }
   },
 
-  async diagnostics(sessionId) {
-    // For tests: who owns the active tab in each window. No URLs or titles.
+  async diagnostics(sessionId, _label, { tabId } = {}) {
+    // For tests: who owns the active tab in each window, and where the agent's cursor is in a tab.
+    // No URLs or titles.
     const session = sessions[sessionId];
     const agentTabs = new Set(Object.values(sessions).flatMap((s) => s.tabIds));
     const windows = await chrome.windows.getAll({ populate: true, windowTypes: ['normal', 'popup'] });
@@ -1439,6 +1635,7 @@ const handlers = {
         return { type: window.type, focused: window.focused, tabs: window.tabs.length, activeTab: owner };
       }),
       sessionTabs: session?.tabIds.length ?? 0,
+      cursor: Number.isInteger(tabId) && session?.tabIds.includes(tabId) ? (cursorPos.get(tabId) ?? null) : undefined,
       issues,
       version: chrome.runtime.getManifest().version,
     };

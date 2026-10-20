@@ -19,7 +19,11 @@ import { readMessages, writeMessage } from '../src/native-messaging.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tabhand-profiles-'));
-const env = { ...process.env, TABHAND_DATA_DIR: dataDir, TABHAND_HOME: dataDir, TABHAND_SESSION_GRACE_MS: '400' };
+// The agents here run under this test, which stays open, so their sessions would wait minutes for
+// a restarted agent (see test/reconnect.mjs). Keep both waits short.
+// The agents here are this test's own, not part of a conversation that may be running the test.
+delete process.env.CLAUDE_CODE_SESSION_ID;
+const env = { ...process.env, TABHAND_DATA_DIR: dataDir, TABHAND_HOME: dataDir, TABHAND_SESSION_GRACE_MS: '400', TABHAND_RECONNECT_GRACE_MS: '400' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 const check = (name, ok, detail = '') => {

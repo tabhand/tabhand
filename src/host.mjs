@@ -15,6 +15,9 @@ import { dataDir, logPath, socketPath, tokenPath } from './paths.mjs';
 import { VERSION } from './version.mjs';
 
 const SESSION_GRACE_MS = Number(process.env.TABHAND_SESSION_GRACE_MS) || 30_000;
+/** How long a session waits for its agent to come back: while its app is still open, or for a
+ *  conversation that may be resumed. A restarted agent gets the tabs back (see reclaim). */
+const RECONNECT_GRACE_MS = Number(process.env.TABHAND_RECONNECT_GRACE_MS) || 10 * 60_000;
 /** What the extension answers while the user has paused Tabhand in that Chrome profile. */
 const PAUSED = /^The user paused Tabhand/;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -32,6 +35,16 @@ const OPENING_ACTIONS = new Set(['click', 'press_key', 'type']);
 const extensionId = /chrome-extension:\/\/([a-p]{32})/.exec(process.argv.join(' '))?.[1] ?? null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Whether a process is still running. */
+function running(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
 
 /**
  * A Chrome profile as agents see it: an id its extension keeps for good, and the name the user gave
@@ -310,6 +323,27 @@ export async function runHost() {
   const sessions = new Map();
   /** @type {Map<string, NodeJS.Timeout>} sessionId -> pending end-of-session timer */
   const endTimers = new Map();
+  /** sessionId -> a session whose agent went away, waiting for it: { conversation, parent, cwd, label, since } */
+  const waiting = new Map();
+  /** sessionId an MCP server says hello with -> the session it took over (see reclaim) */
+  const aliases = new Map();
+
+  /**
+   * The session a restarted MCP server takes over: one still waiting for an agent of the same name
+   * in the same conversation (Claude Code keeps it when it resumes one in a new process), or, when
+   * the app doesn't say, run by the same app process in the same folder. Another agent, even in the
+   * same folder, has another conversation or app process, so it never gets these tabs.
+   */
+  function reclaim(client) {
+    const same = (gone) =>
+      gone.label === client.label &&
+      (client.conversation ? gone.conversation === client.conversation : Boolean(client.parent) && gone.parent === client.parent && gone.cwd === client.cwd);
+    let found = null;
+    for (const [sessionId, gone] of waiting) {
+      if (same(gone) && (!found || gone.since > found.since)) found = { sessionId, since: gone.since };
+    }
+    return found?.sessionId ?? null;
+  }
   /** @type {Map<number, {socket: net.Socket, id: unknown, cmd: string, timer: NodeJS.Timeout, frontBefore?: Promise<number | null>}>} */
   const pending = new Map();
   /** Hosts of other profiles (or copies of the extension), standing by. */
@@ -393,22 +427,30 @@ export async function runHost() {
         client.socket.destroy();
         return;
       }
-      client.sessionId = sessionId;
       client.label = String(message.label ?? 'Agent').replace(/[^\p{L}\p{N} ._-]/gu, '').slice(0, 40) || 'Agent';
       client.theme = /^[a-z]{1,16}$/.test(message.theme) ? message.theme : 'agent';
-      clearTimeout(endTimers.get(sessionId));
-      endTimers.delete(sessionId);
-      const previous = sessions.get(sessionId);
+      client.conversation = typeof message.conversation === 'string' && /^[\w-]{8,100}$/.test(message.conversation) ? message.conversation : null;
+      client.parent = Number.isInteger(message.parent) && message.parent > 1 ? message.parent : null;
+      client.cwd = typeof message.cwd === 'string' ? message.cwd.slice(0, 1000) : '';
+      // A session coming back keeps its id; a new one may be a restarted MCP server taking over.
+      const known = aliases.get(sessionId) ?? (sessions.has(sessionId) || waiting.has(sessionId) ? sessionId : null);
+      const id = known ?? reclaim(client) ?? sessionId;
+      if (id !== sessionId) aliases.set(sessionId, id);
+      client.sessionId = id;
+      clearTimeout(endTimers.get(id));
+      endTimers.delete(id);
+      waiting.delete(id);
+      const previous = sessions.get(id);
       if (previous && previous.socket !== client.socket) previous.socket.destroy();
-      sessions.set(sessionId, client);
+      sessions.set(id, client);
       // Back after the bridge moved to another profile: its choice of profile still stands. That
       // profile may not have reconnected yet, so it's looked up when the session's next tab opens.
-      if (message.profile && !routes.get(sessionId)?.pinned) {
+      if (message.profile && !routes.get(id)?.pinned) {
         const want = String(message.profile).slice(0, 80);
-        routes.set(sessionId, { profileId: null, name: `"${want}"`, pinned: true, want });
+        routes.set(id, { profileId: null, name: `"${want}"`, pinned: true, want });
       }
       send(client.socket, { type: 'welcome', version: VERSION, profiles: true });
-      log('session connected');
+      log(known || id === sessionId ? 'session connected' : 'session taken over by a restarted agent');
       return;
     }
 
@@ -527,19 +569,28 @@ export async function runHost() {
     const { sessionId } = client;
     if (!sessionId || sessions.get(sessionId) !== client) return;
     sessions.delete(sessionId);
-    // Agents reconnect after hiccups; only end the session if it stays away.
-    endTimers.set(
-      sessionId,
-      setTimeout(() => {
-        endTimers.delete(sessionId);
-        toExtension({ type: 'session-ended', sessionId });
-        for (const target of touched.get(sessionId) ?? []) send(target.socket, { type: 'relay-end', sessionId });
-        touched.delete(sessionId);
-        routes.delete(sessionId);
-        for (const [tabId, home] of homes) if (home.sessionId === sessionId) homes.delete(tabId);
-        log('session ended');
-      }, SESSION_GRACE_MS),
-    );
+    const since = Date.now();
+    waiting.set(sessionId, { conversation: client.conversation, parent: client.parent, cwd: client.cwd, label: client.label, since });
+    // Agents reconnect after hiccups, and an agent's app may restart its MCP server: the session only
+    // ends once its agent stays away. While its app is open, or its conversation may be resumed, it
+    // waits longer for the new server.
+    const end = () => {
+      endTimers.delete(sessionId);
+      waiting.delete(sessionId);
+      for (const [alias, id] of aliases) if (id === sessionId || alias === sessionId) aliases.delete(alias);
+      toExtension({ type: 'session-ended', sessionId });
+      for (const target of touched.get(sessionId) ?? []) send(target.socket, { type: 'relay-end', sessionId });
+      touched.delete(sessionId);
+      routes.delete(sessionId);
+      for (const [tabId, home] of homes) if (home.sessionId === sessionId) homes.delete(tabId);
+      log('session ended');
+    };
+    const check = () => {
+      const mayReturn = client.conversation || (client.parent && running(client.parent));
+      if (mayReturn && Date.now() - since < RECONNECT_GRACE_MS) endTimers.set(sessionId, setTimeout(check, SESSION_GRACE_MS));
+      else end();
+    };
+    endTimers.set(sessionId, setTimeout(check, SESSION_GRACE_MS));
   }
 
   server = net.createServer((socket) => {
