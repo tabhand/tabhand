@@ -29,7 +29,8 @@ export function frontmostApp() {
 
 /**
  * A DevTools connection to the whole test browser, for doing what the user would (opening a tab of
- * their own). The browser has to be started with --remote-debugging-port=0.
+ * their own), or for looking inside the extension (send takes a target's sessionId). The browser
+ * has to be started with --remote-debugging-port=0.
  */
 export async function browserDevTools(profile) {
   const portFile = path.join(profile, 'DevToolsActivePort');
@@ -51,11 +52,11 @@ export async function browserDevTools(profile) {
     else settle.resolve(message.result);
   };
   return {
-    send: (method, params = {}) =>
+    send: (method, params = {}, sessionId) =>
       new Promise((resolve, reject) => {
         const id = ++nextId;
         waiting.set(id, { resolve, reject });
-        socket.send(JSON.stringify({ id, method, params }));
+        socket.send(JSON.stringify({ id, method, params, sessionId }));
       }),
     close: () => socket.close(),
   };

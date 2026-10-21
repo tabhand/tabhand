@@ -99,7 +99,8 @@ export function renderSnapshot(nodes, { clickable = new Set() } = {}) {
     const children = (node.childIds ?? []).map((id) => byId.get(id));
     const pad = '  '.repeat(depth);
 
-    if (!inRef && clickable.has(node.backendDOMNodeId) && !ACTIONABLE.has(role) && role !== 'StaticText' && !focusable(node) && !hasRefInside(node)) {
+    // A focusable one too: without a name, the outline would pass over it as a mere wrapper.
+    if (!inRef && clickable.has(node.backendDOMNodeId) && !ACTIONABLE.has(role) && role !== 'StaticText' && !hasRefInside(node)) {
       const label = name || textInside(node, byId, 80);
       if (label) {
         push(`${pad}- clickable "${label}" [ref=e${node.backendDOMNodeId}]`);

@@ -19,9 +19,18 @@ const page = `<!doctype html><title>Div controls</title>
   <div class="control" data-pick="radio"><span class="dot"></span> I worked on this product</div>
   <div class="control" data-pick="date"><b>19</b> <small>Oct</small></div>
   <div class="control" data-pick="icon"><img alt="Developer Tools" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="> Developer Tools</div>
+  <div class="control" data-pick="svg" tabindex="-1"><svg width="60" height="16"><title>logo_google</title><rect width="60" height="16" fill="#4285f4"/></svg></div>
+  <div data-pick="image" style="margin: 6px"><img alt="Upload photo" width="24" height="24" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></div>
+  <menu-item data-pick="shadow" style="display: block; margin: 6px"></menu-item>
+  <div data-pick="generated" class="generated" role="button" style="margin: 6px"></div>
+  <style>.generated::before { content: "Made by CSS" }</style>
   <div data-pick="plain" style="margin: 6px">Plain click target</div>
   <p>Picked: <span id="picked">nothing</span></p>
   <script>
+    // A web component whose label lives in its shadow root, like Bing Webmaster Tools' menu.
+    customElements.define('menu-item', class extends HTMLElement {
+      constructor() { super(); this.attachShadow({ mode: 'open' }).innerHTML = '<span role="treeitem">Shadow item</span>'; }
+    });
     for (const control of document.querySelectorAll('[data-pick]')) {
       control.addEventListener('click', () => { document.getElementById('picked').textContent = control.dataset.pick; });
     }
@@ -52,6 +61,7 @@ try {
     ['a custom radio card', 'I worked on this product', 'radio'],
     ['a date tile', '19 Oct', 'date'],
     ['a row whose icon repeats its label (named once)', 'Developer Tools', 'icon'],
+    ['a focusable card named only by its SVG (Bing sign-in)', 'logo_google', 'svg'],
   ]) {
     const ref = new RegExp(`clickable "${label}" \\[ref=(e\\d+)\\]`).exec(snapshot)?.[1];
     if (ref) await bridge.request('click', { tabId, ref });
@@ -62,6 +72,18 @@ try {
   const result = await bridge.request('click', { tabId, text: 'Plain click target' });
   const now = await picked(tabId);
   check('an element with no ref can be clicked by its text', now === 'plain', `picked: ${now}, notes: ${JSON.stringify(result.notes ?? [])}`);
+
+  await bridge.request('click', { tabId, text: 'Shadow item' }).catch(() => {});
+  const inShadow = await picked(tabId);
+  check('text inside a web component (shadow DOM) can be clicked', inShadow === 'shadow', `picked: ${inShadow}`);
+
+  await bridge.request('click', { tabId, text: 'Made by CSS' }).catch(() => {});
+  const generated = await picked(tabId);
+  check('a label only CSS draws can be clicked by its text (from the accessibility tree)', generated === 'generated', `picked: ${generated}`);
+
+  await bridge.request('click', { tabId, text: 'Upload photo' });
+  const byAlt = await picked(tabId);
+  check('an image can be clicked by its alt text', byAlt === 'image', `picked: ${byAlt}`);
 
   const missing = await bridge.request('click', { tabId, text: 'Nothing says this' }).then(
     () => 'clicked',

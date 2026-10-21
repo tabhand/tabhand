@@ -27,27 +27,33 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`);
 };
 
-// The extension's side: tabs per session, and which sessions ended.
+// The extension's side: tabs per session, and which sessions ended. It keeps them when its helper
+// restarts, as Tabhand's extension does.
 const extension = { tabs: new Map(), ended: [], nextTab: 100, active: false };
-const host = spawn(process.execPath, [bin, 'host', `chrome-extension://${'a'.repeat(32)}/`], { env, stdio: ['pipe', 'pipe', 'inherit'] });
-readMessages(host.stdout, (message) => {
-  if (message.type === 'active') extension.active = true;
-  if (message.type === 'session-ended') extension.ended.push(message.sessionId);
-  if (message.type !== 'request') return;
-  const tabs = extension.tabs.get(message.sessionId) ?? [];
-  let reply;
-  if (message.cmd === 'open_tab') {
-    const tabId = extension.nextTab++;
-    extension.tabs.set(message.sessionId, [...tabs, tabId]);
-    reply = { ok: true, result: { tabId, title: 'Page', url: message.params.url } };
-  } else if (message.cmd === 'list_tabs') {
-    reply = { ok: true, result: { tabs: tabs.map((tabId) => ({ tabId, title: 'Page', url: 'https://example.com/' })) } };
-  } else {
-    reply = { ok: false, error: `Unknown command: ${message.cmd}` };
-  }
-  writeMessage(host.stdin, { type: 'response', id: message.id, ...reply });
-});
-writeMessage(host.stdin, { type: 'hello', version: '0.9.0', profile: { id: 'aaaa1111', name: 'Work' } });
+let host;
+function startHost() {
+  const helper = spawn(process.execPath, [bin, 'host', `chrome-extension://${'a'.repeat(32)}/`], { env, stdio: ['pipe', 'pipe', 'inherit'] });
+  readMessages(helper.stdout, (message) => {
+    if (message.type === 'active') extension.active = true;
+    if (message.type === 'session-ended') extension.ended.push(message.sessionId);
+    if (message.type !== 'request') return;
+    const tabs = extension.tabs.get(message.sessionId) ?? [];
+    let reply;
+    if (message.cmd === 'open_tab') {
+      const tabId = extension.nextTab++;
+      extension.tabs.set(message.sessionId, [...tabs, tabId]);
+      reply = { ok: true, result: { tabId, title: 'Page', url: message.params.url } };
+    } else if (message.cmd === 'list_tabs') {
+      reply = { ok: true, result: { tabs: tabs.map((tabId) => ({ tabId, title: 'Page', url: 'https://example.com/' })) } };
+    } else {
+      reply = { ok: false, error: `Unknown command: ${message.cmd}` };
+    }
+    writeMessage(helper.stdin, { type: 'response', id: message.id, ...reply });
+  });
+  writeMessage(helper.stdin, { type: 'hello', version: '0.9.0', profile: { id: 'aaaa1111', name: 'Work' } });
+  return helper;
+}
+host = startHost();
 
 // Another app: a process of its own that runs the MCP server, and takes it down when it goes.
 const otherApp = `
@@ -121,6 +127,20 @@ try {
   const resumed = await agent({ fromOtherApp: true, conversation: 'conversation-aaaa1111' });
   listed = await resumed.call('browser_list_tabs');
   check('the resumed conversation, in a new app process, gets its tab back', listed.text.includes(`Tab ${talkTab}:`), listed.text);
+
+  // The helper restarts (Chrome restarts it with the extension) and forgets who took over what. The
+  // resumed agent still comes back as the session it took over.
+  extension.active = false;
+  host.kill();
+  await new Promise((resolve) => host.once('exit', resolve));
+  host = startHost();
+  await until(() => extension.active);
+  let after = { error: true, text: '' };
+  for (let i = 0; i < 20 && after.error; i++) {
+    after = await resumed.call('browser_list_tabs');
+    if (after.error) await sleep(100);
+  }
+  check('after its helper restarts, the resumed agent still has its tab', after.text.includes(`Tab ${talkTab}:`), after.text);
   await resumed.client.close();
 } catch (error) {
   check('test run', false, error.message);

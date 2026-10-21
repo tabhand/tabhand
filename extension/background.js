@@ -33,12 +33,38 @@ let helperAnswersDialogs = false;
 
 /** sessionId -> { label, groupId, windowId, tabIds: number[] } (persisted across worker restarts) */
 let sessions = {};
-const ready = chrome.storage.session.get(['sessions', 'paused']).then((stored) => {
-  sessions = stored.sessions ?? {};
+const ready = Promise.all([chrome.storage.session.get(['sessions', 'paused']), chrome.storage.local.get('sessions')]).then(async ([stored, kept]) => {
+  sessions = stored.sessions ?? (await restore(kept.sessions ?? {}));
   paused = stored.paused ?? false;
   updateBadge();
 });
-const save = () => chrome.storage.session.set({ sessions, paused });
+// Chrome forgets storage.session when it reloads the extension (an update does), so sessions are
+// kept in storage.local too, for agents still at work then (see restore).
+const save = () => Promise.all([chrome.storage.session.set({ sessions, paused }), chrome.storage.local.set({ sessions })]);
+
+/**
+ * Sessions from before Chrome reloaded the extension, so that agents at work keep their tabs and
+ * their next tab joins the same group. Only tabs still in the session's own tab group come back.
+ * After Chrome restarts, tabs and groups have new ids, so nothing matches: a tab of the user's that
+ * gets an old tab id never goes to an agent.
+ */
+async function restore(kept) {
+  const restored = {};
+  for (const [sessionId, session] of Object.entries(kept)) {
+    if (!Number.isInteger(session?.groupId) || !Array.isArray(session.tabIds)) continue;
+    try {
+      await chrome.tabGroups.get(session.groupId);
+    } catch {
+      continue;
+    }
+    const inGroup = new Set((await chrome.tabs.query({ groupId: session.groupId })).map((tab) => tab.id));
+    const tabIds = session.tabIds.filter((tabId) => inGroup.has(tabId));
+    if (tabIds.length) restored[sessionId] = { ...session, tabIds };
+  }
+  await chrome.storage.session.set({ sessions: restored });
+  await chrome.storage.local.set({ sessions: restored });
+  return restored;
+}
 
 /**
  * This Chrome profile, as agents see it: an id kept for good, and the name the user gives it
@@ -1274,18 +1300,27 @@ async function pointerElements(tabId) {
 }
 
 /** Finds the element showing some text, for clicks on things a snapshot gives no ref: the innermost
- * visible one whose text is exactly it (ignoring case and spacing), or else has it. Returns
- * [element, how many matched]. */
+ * visible one whose text, or label, alt text or title, is exactly it (ignoring case and spacing), or
+ * else has it. Returns [element, how many matched]. */
 const ELEMENT_BY_TEXT = `function (wanted) {
   const plain = (text) => String(text ?? '').replace(/\\s+/g, ' ').trim().toLowerCase();
   const target = plain(wanted);
-  const elements = [...document.querySelectorAll('body *')].filter((element) => !['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'].includes(element.tagName));
+  // Web components keep their text in shadow roots; look in the open ones too.
+  const elements = [];
+  const collect = (root) => {
+    for (const element of root.querySelectorAll('*')) {
+      if (!['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'].includes(element.tagName)) elements.push(element);
+      if (element.shadowRoot) collect(element.shadowRoot);
+    }
+  };
+  collect(document.body ?? document.documentElement);
   const visible = (element) => {
     const box = element.getBoundingClientRect();
     return box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden';
   };
+  const names = (element) => [element.textContent, ...['aria-label', 'alt', 'title'].map((name) => element.getAttribute(name))].map(plain).filter(Boolean);
   const innermost = (test) => {
-    const matches = elements.filter((element) => test(plain(element.textContent)));
+    const matches = elements.filter((element) => names(element).some(test));
     return matches.filter((element) => !matches.some((other) => other !== element && element.contains(other))).filter(visible);
   };
   let found = innermost((text) => text === target);
@@ -1296,17 +1331,41 @@ const ELEMENT_BY_TEXT = `function (wanted) {
 async function elementByText(tabId, text) {
   const objectGroup = 'tabhand-find';
   try {
-    const { result: list } = await send(tabId, 'Runtime.evaluate', { expression: `(${ELEMENT_BY_TEXT})(${JSON.stringify(text)})`, objectGroup });
+    const { result: list, exceptionDetails } = await send(tabId, 'Runtime.evaluate', { expression: `(${ELEMENT_BY_TEXT})(${JSON.stringify(text)})`, objectGroup });
+    if (exceptionDetails) throw new Error(`Couldn't search the page for "${text}": ${exceptionDetails.exception?.description?.split('\n')[0] ?? exceptionDetails.text}`);
     const item = (index, byValue) =>
       send(tabId, 'Runtime.callFunctionOn', { objectId: list.objectId, functionDeclaration: `function () { return this[${index}]; }`, returnByValue: byValue, objectGroup });
     const { result: count } = await item(1, true);
-    if (!count.value) throw new Error(`No element on the page shows "${text}". Take a new browser_snapshot to check the wording.`);
+    if (!count.value) {
+      const named = await elementByName(tabId, text);
+      if (named) return named;
+      throw new Error(`No element on the page shows "${text}". Take a new browser_snapshot to check the wording.`);
+    }
     const { result: element } = await item(0, false);
     const { node } = await send(tabId, 'DOM.describeNode', { objectId: element.objectId });
     return { backendNodeId: node.backendNodeId, count: count.value };
   } finally {
     send(tabId, 'Runtime.releaseObjectGroup', { objectGroup }).catch(() => {});
   }
+}
+
+/**
+ * The element the accessibility tree names with this text, for labels the page's text doesn't hold
+ * (generated by CSS, in a closed shadow root, or borrowed from another element): what the snapshot
+ * shows. Elements an agent can act on come first.
+ */
+async function elementByName(tabId, text) {
+  const plain = (value) => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const wanted = plain(text);
+  const { nodes } = await send(tabId, 'Accessibility.getFullAXTree');
+  const named = nodes.filter((node) => !node.ignored && node.backendDOMNodeId && node.role?.value !== 'StaticText');
+  for (const test of [(name) => name === wanted, (name) => name.includes(wanted)]) {
+    const found = named.filter((node) => test(plain(node.name?.value)));
+    if (!found.length) continue;
+    const actionable = found.filter((node) => !['generic', 'none', 'paragraph', 'heading', 'text'].includes(node.role?.value));
+    return { backendNodeId: (actionable[0] ?? found[0]).backendDOMNodeId, count: found.length };
+  }
+  return null;
 }
 
 async function elementCenter(tabId, backendNodeId) {
@@ -1617,8 +1676,8 @@ const handlers = {
   },
 
   async diagnostics(sessionId, _label, { tabId } = {}) {
-    // For tests: who owns the active tab in each window, and where the agent's cursor is in a tab.
-    // No URLs or titles.
+    // For tests: who owns the active tab in each window, how many groups the session's tabs are in,
+    // and where the agent's cursor is in a tab. No URLs or titles.
     const session = sessions[sessionId];
     const agentTabs = new Set(Object.values(sessions).flatMap((s) => s.tabIds));
     const windows = await chrome.windows.getAll({ populate: true, windowTypes: ['normal', 'popup'] });
@@ -1635,6 +1694,9 @@ const handlers = {
         return { type: window.type, focused: window.focused, tabs: window.tabs.length, activeTab: owner };
       }),
       sessionTabs: session?.tabIds.length ?? 0,
+      sessionGroups: new Set(
+        (await Promise.all((session?.tabIds ?? []).map((id) => chrome.tabs.get(id).then((tab) => tab.groupId, () => -1)))).filter((id) => id !== -1),
+      ).size,
       cursor: Number.isInteger(tabId) && session?.tabIds.includes(tabId) ? (cursorPos.get(tabId) ?? null) : undefined,
       issues,
       version: chrome.runtime.getManifest().version,

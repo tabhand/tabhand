@@ -70,6 +70,8 @@ export class BridgeClient {
             welcomed = true;
             // Bridges from 0.9 on can tell Chrome profiles apart.
             this.knowsProfiles = message.profiles === true;
+            // A restarted MCP server may have taken over its earlier session's tabs.
+            if (typeof message.sessionId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(message.sessionId)) this.sessionId = message.sessionId;
             this.socket = socket;
             resolve();
           } else if (message.type === 'error') {

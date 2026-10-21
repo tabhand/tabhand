@@ -449,7 +449,9 @@ export async function runHost() {
         const want = String(message.profile).slice(0, 80);
         routes.set(id, { profileId: null, name: `"${want}"`, pinned: true, want });
       }
-      send(client.socket, { type: 'welcome', version: VERSION, profiles: true });
+      // The agent says hello with this id from now on, so a helper that restarts (with Chrome's
+      // extension, say) still knows it by the session it took over.
+      send(client.socket, { type: 'welcome', version: VERSION, profiles: true, sessionId: id });
       log(known || id === sessionId ? 'session connected' : 'session taken over by a restarted agent');
       return;
     }
