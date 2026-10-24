@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/macOS-Google%20Chrome-4b5563" alt="macOS and Google Chrome">
 </p>
 
-https://github.com/user-attachments/assets/a404e294-8ae2-459d-a5b0-a3eca410a01f
+https://github.com/user-attachments/assets/d5fe5c5a-c012-471f-bf3b-10fa754c382d
 
 ```sh
 npx tabhand setup
