@@ -18,6 +18,8 @@
 
 https://github.com/user-attachments/assets/d5fe5c5a-c012-471f-bf3b-10fa754c382d
 
+<p align="center"><sub>Video not playing? <a href="https://tabhand.dev/tabhand-in-39-seconds.mp4">Watch it on tabhand.dev</a></sub></p>
+
 ```sh
 npx tabhand setup
 ```
