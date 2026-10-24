@@ -16,9 +16,7 @@
   <img src="https://img.shields.io/badge/macOS-Google%20Chrome-4b5563" alt="macOS and Google Chrome">
 </p>
 
-<p align="center">
-  <img src="docs/cursors.jpg" width="820" alt="Each agent gets its own cursor: Claude, Codex, OpenCode, Cursor, Gemini, Copilot">
-</p>
+https://github.com/user-attachments/assets/a404e294-8ae2-459d-a5b0-a3eca410a01f
 
 ```sh
 npx tabhand setup
@@ -56,6 +54,10 @@ agent ──stdio──▶ tabhand mcp ──Unix socket──▶ native host �
 - **Each agent wears its own colors.** Claude, Codex, OpenCode, Cursor, Gemini and Copilot each get their own cursor and tab group color; anything else gets a violet cursor with its own name. Override with `tabhand mcp --label <name> --theme <theme>`.
 - **Stop button.** Click the toolbar icon, or Cancel on Chrome's "started debugging" bar, to pause every agent at once.
 - **Several Chrome profiles.** If Tabhand is in more than one profile (say, work and personal), agents see each one and can ask for it: "use my Work profile". Right-click the Tabhand icon in a profile and choose "Name this profile" to give it a name agents know it by, or fill in that profile's Google email. Without a choice, agents use the profile that connected first. Pause Tabhand in one profile and new work goes to a profile where it's on. An agent that asked for a profile stays in it: if you pause that one, the agent hears so rather than signing in somewhere else.
+
+<p align="center">
+  <img src="docs/cursors.jpg" width="820" alt="Each agent gets its own cursor: Claude, Codex, OpenCode, Cursor, Gemini, Copilot">
+</p>
 
 ![Tab badges for each harness](docs/tab-badges.jpg)
 
