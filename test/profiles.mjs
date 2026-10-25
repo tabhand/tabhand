@@ -30,7 +30,7 @@ const check = (name, ok, detail = '') => {
   results.push(ok);
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`);
 };
-const PAUSED = 'The user paused Tabhand in Chrome. Ask them to click the Tabhand toolbar icon to resume.';
+const PAUSED = 'The user paused Tabhand in Chrome. Ask them to click the Tabhand icon in Chrome’s toolbar and press Resume.';
 
 /** A Chrome profile: a real host process with a fake extension on the other end of its pipe. */
 function profile(name, firstTab, identity) {

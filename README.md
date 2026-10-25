@@ -33,7 +33,7 @@ Then add the extension from the [Chrome Web Store](https://chromewebstore.google
 - **Your logins, not a blank browser.** Agents work in the Chrome you already use, so email, dashboards and admin panels just work. You never hand over a password.
 - **You keep working.** Every agent gets tabs of its own in the background, grouped under its name and muted. Chrome never jumps to the front.
 - **Your tabs stay yours.** An agent can only reach the tabs it opened, never yours and never another agent's.
-- **You can watch.** Each agent has its own cursor that glides, clicks and types, and its tabs wear its icon. Click the toolbar button to pause every agent at once.
+- **You can watch.** Each agent has its own cursor that glides, clicks and types, and its tabs wear its icon. The Tabhand button in Chrome's toolbar shows who's working and pauses every agent at once.
 - **No servers.** Tabhand runs entirely on your computer, with no analytics. Pages only go to the agent you're running. Read the [privacy policy](PRIVACY.md).
 
 <p align="center">
@@ -54,8 +54,8 @@ agent ──stdio──▶ tabhand mcp ──Unix socket──▶ native host �
 - **You can watch.** While an agent works in a tab, its cursor sits on the page, even across page loads. It glides to whatever the agent clicks, ripples on each click, shows typing dots while it types, waves when you switch to the tab, and fades out once the agent is done. It only animates while you're looking, and it's hidden from the agent's own screenshots.
 - **Agent tabs stand out.** While an agent works in a tab, the tab's icon becomes the agent's arrow. The site's own icon comes back when the agent is done.
 - **Each agent wears its own colors.** Claude, Codex, OpenCode, Cursor, Gemini and Copilot each get their own cursor and tab group color; anything else gets a violet cursor with its own name. Override with `tabhand mcp --label <name> --theme <theme>`.
-- **Stop button.** Click the toolbar icon, or Cancel on Chrome's "started debugging" bar, to pause every agent at once.
-- **Several Chrome profiles.** If Tabhand is in more than one profile (say, work and personal), agents see each one and can ask for it: "use my Work profile". Right-click the Tabhand icon in a profile and choose "Name this profile" to give it a name agents know it by, or fill in that profile's Google email. Without a choice, agents use the profile that connected first. Pause Tabhand in one profile and new work goes to a profile where it's on. An agent that asked for a profile stays in it: if you pause that one, the agent hears so rather than signing in somewhere else.
+- **Stop button.** Click the Tabhand icon in Chrome's toolbar and press Pause every agent, or click Cancel on Chrome's "started debugging" bar. Either pauses every agent at once.
+- **Several Chrome profiles.** If Tabhand is in more than one profile (say, work and personal), agents see each one and can ask for it: "use my Work profile". Click the Tabhand icon in a profile, then its name at the top of the panel, to give it a name agents know it by, or fill in that profile's Google email. Without a choice, agents use the profile that connected first. Pause Tabhand in one profile and new work goes to a profile where it's on. An agent that asked for a profile stays in it: if you pause that one, the agent hears so rather than signing in somewhere else.
 
 <p align="center">
   <img src="docs/cursors.jpg" width="820" alt="Each agent gets its own cursor: Claude, Codex, OpenCode, Cursor, Gemini, Copilot">
@@ -105,8 +105,10 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 |---|---|
 | `browser_open_tab` | Open a background tab in the agent's tab group, optionally loading a URL, in the Chrome profile it asks for |
 | `browser_navigate` | Load a URL in one of the session's tabs |
-| `browser_snapshot` | Read the page as an accessibility outline; actionable elements, including ones a page made clickable out of plain elements, get refs like `e123` |
+| `browser_snapshot` | Read the page as an accessibility outline; actionable elements, including ones a page made clickable or draggable out of plain elements, get refs like `e123` |
 | `browser_click` | Click an element by ref, or by the text it shows |
+| `browser_hover` | Move the pointer over an element (by ref or text) to reveal controls that only show on hover, and get a fresh snapshot with refs for them |
+| `browser_drag` | Drag one element onto another, by ref or text: reorder lists, move cards between columns. Works with the browser's own drag and drop and with pages that follow the mouse |
 | `browser_type` | Type into a field, optionally clearing it first and pressing Enter after, or choose a dropdown option by its text |
 | `browser_press_key` | Press a key or combination such as `Shift+Tab` |
 | `browser_scroll` | Scroll up or down |
@@ -123,9 +125,10 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - `node test/setup.mjs` runs setup, status and remove in a throwaway home folder holding existing agent configs. It checks that Tabhand gets added, that comments and other settings survive, that a second run changes nothing, and that the launcher serves the MCP server.
 - `node test/package.mjs` packs the npm package, installs the tarball, and runs setup from it.
 - `node test/profiles.mjs` runs two bridges against stand-in extensions, "Work" and "Personal". It checks that agents see both by name and can choose one, that a chosen profile stays chosen, and that pausing one profile sends new work to the other.
-- `node test/profile-name.mjs` names a throwaway Chrome for Testing profile on the extension's "Name this profile" page and checks that agents see the name.
+- `node test/profile-name.mjs` names a throwaway Chrome for Testing profile in the toolbar panel and checks that agents see the name, and that the panel pauses and resumes agents.
 - `npm run test:e2e` launches a throwaway Chrome for Testing profile, runs two agents in parallel, and checks they can't reach each other's tabs and that the browser never comes to the front.
 - `node test/new-tabs.mjs` checks that links, `window.open()` and popups from an agent's tab never take over your tab, and that the agent gets the new tab.
+- `node test/drag-hover.mjs` checks, in a background tab, that hover-only buttons (shown by CSS `:hover` or by a `mouseenter` handler) can be reached, and that lists reorder by dragging, with the browser's own HTML5 drag and drop and with mouse events alone, including lists that want a press delay and ones that have to be scrolled while an item is held.
 - `node test/upload.mjs` checks that files reach a page byte for byte, through a file field or a button's file picker, including files over Chrome's 1 MB message cap.
 - `node test/foreign-frames.mjs` checks that an agent gets through pages where a password manager's autofill menu pops up, using a stand-in extension.
 - `npm run test:smoke` runs a short check against the Chrome you have open.

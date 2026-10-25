@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tabhand",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "Lets AI agents work in background tabs of your Chrome without stealing focus.",
   "icons": {
     "16": "icons/16.png",
@@ -16,8 +16,7 @@
     "tabGroups",
     "storage",
     "alarms",
-    "scripting",
-    "contextMenus"
+    "scripting"
   ],
   "optional_permissions": [
     "identity",
@@ -32,6 +31,7 @@
   },
   "action": {
     "default_title": "Tabhand",
+    "default_popup": "panel.html",
     "default_icon": {
       "16": "icons/16.png",
       "32": "icons/32.png"

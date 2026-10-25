@@ -2,7 +2,8 @@
 // can act on get a ref (e123) that browser_click and browser_type accept. A ref is the element's
 // DOM backend node id, so it stays valid until the page navigates or the element is removed.
 // Pages also build controls from plain elements (a div with a click handler) that the tree has no
-// role for; those the caller found clickable show as "clickable", with a ref too.
+// role for; those the caller found clickable show as "clickable", with a ref too, and so do the
+// ones that can be dragged ("draggable"), for browser_drag to name.
 
 const ACTIONABLE = new Set([
   'button',
@@ -58,8 +59,8 @@ function textInside(node, byId, max = 150) {
 
 const focusable = (node) => (node.properties ?? []).some((p) => p.name === 'focusable' && p.value?.value === true);
 
-/** clickable: DOM backend node ids of plain elements the page made clickable. */
-export function renderSnapshot(nodes, { clickable = new Set() } = {}) {
+/** clickable, draggable: DOM backend node ids of plain elements the page made clickable, or draggable. */
+export function renderSnapshot(nodes, { clickable = new Set(), draggable = new Set() } = {}) {
   if (!nodes?.length) return '(empty page)';
   const byId = new Map(nodes.map((node) => [node.nodeId, node]));
   // Whether anything inside a node has a ref of its own: then that's what to click, and a card
@@ -100,10 +101,11 @@ export function renderSnapshot(nodes, { clickable = new Set() } = {}) {
     const pad = '  '.repeat(depth);
 
     // A focusable one too: without a name, the outline would pass over it as a mere wrapper.
-    if (!inRef && clickable.has(node.backendDOMNodeId) && !ACTIONABLE.has(role) && role !== 'StaticText' && !hasRefInside(node)) {
+    const kind = clickable.has(node.backendDOMNodeId) ? 'clickable' : draggable.has(node.backendDOMNodeId) ? 'draggable' : null;
+    if (!inRef && kind && !ACTIONABLE.has(role) && role !== 'StaticText' && !hasRefInside(node)) {
       const label = name || textInside(node, byId, 80);
       if (label) {
-        push(`${pad}- clickable "${label}" [ref=e${node.backendDOMNodeId}]`);
+        push(`${pad}- ${kind} "${label}" [ref=e${node.backendDOMNodeId}]`);
         for (const child of children) walk(child, depth + 1, label, true);
         return;
       }

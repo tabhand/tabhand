@@ -47,7 +47,8 @@ Use it whenever a task needs a real browser: pages behind a login (email, dashbo
 
 How it works:
 - browser_open_tab opens a tab in your own tab group; you can only reach tabs you opened and tabs those pages open.
-- browser_snapshot reads the page and labels what you can act on with refs like e12; browser_click and browser_type take those refs. Take a new snapshot after the page changes. If something you can see has no ref, browser_click can take its text instead.
+- browser_snapshot reads the page and labels what you can act on with refs like e12; browser_click, browser_type, browser_hover and browser_drag take those refs. Take a new snapshot after the page changes. If something you can see has no ref, browser_click, browser_hover and browser_drag can take its text instead.
+- Controls that only appear while the pointer is over something: browser_hover it, and the snapshot it returns shows them. To reorder or move things, browser_drag one onto another.
 - Prefer snapshots for reading; use browser_screenshot to check visuals.
 - Close your tabs with browser_close_tab when you're done.
 - The user may have Tabhand in several Chrome profiles (say, work and personal), each signed in to different accounts. When they mention one, or a tool says Tabhand is paused, call browser_list_profiles, then pass the profile to browser_open_tab. If it's unclear which profile they mean, ask them.
@@ -137,7 +138,7 @@ export async function runMcpServer({ label, theme } = {}) {
       const lines = profiles.map(profileLine);
       if (chosenMissing) lines.push(`You chose ${chosenMissing}, which isn't connected now: its Chrome window may be closed.`);
       if (profiles.length > 1 && profiles.some((p) => !p.name && p.state !== 'outdated')) {
-        lines.push('The user can name a profile: right-click the Tabhand icon in that profile\'s Chrome toolbar and choose "Name this profile".');
+        lines.push('The user can name a profile: click the Tabhand icon in that profile\'s Chrome toolbar, then the name at the top of the panel.');
       }
       if (profiles.length > 1) lines.push('To choose one, pass its name or id as profile to browser_open_tab.');
       const heading = profiles.length === 1 ? 'Tabhand is in one Chrome profile:' : `Tabhand is in ${profiles.length} Chrome profiles:`;
@@ -182,6 +183,39 @@ export async function runMcpServer({ label, theme } = {}) {
       if (!args.ref && !args.text) throw new Error('Give the ref of the element to click, from browser_snapshot, or its text.');
       const result = await call('click', args);
       return text(tabLine(result) + navigatedNote(result));
+    },
+  );
+
+  tool(
+    'browser_hover',
+    "Move the pointer over an element and leave it there, to reveal controls that only show on hover (a delete button on an image, a menu that opens under the pointer). Pass its ref from browser_snapshot, or else the text it shows. Waits a moment for what the hover brings up, then returns a fresh snapshot, so what appeared has refs you can click. If a card or menu is still loading, take another browser_snapshot.",
+    {
+      tabId,
+      ref: z.string().optional().describe('Element ref from browser_snapshot, e.g. e123.'),
+      text: z.string().optional().describe('Instead of a ref: the visible text of the element to hover.'),
+    },
+    async (args) => {
+      if (!args.ref && !args.text) throw new Error('Give the ref of the element to hover, from browser_snapshot, or its text.');
+      const result = await call('hover', args);
+      return text(`${tabLine(result)}${navigatedNote(result)}\n\n${result.snapshot}`);
+    },
+  );
+
+  tool(
+    'browser_drag',
+    "Drag one element onto another: press on the first, move to the second in small steps, and let go. For reordering lists and boards, moving cards between columns, and the like. Works with the browser's own drag and drop and with pages that follow the mouse themselves, and scrolls while holding the item if the drop target is out of sight. Name each end by its ref from browser_snapshot, or else by the text it shows. Says what moved where when the page shows it; take a new snapshot to check the result.",
+    {
+      tabId,
+      fromRef: z.string().optional().describe('Ref of the element to drag, from browser_snapshot, e.g. e123.'),
+      fromText: z.string().optional().describe('Instead of fromRef: the visible text of the element to drag.'),
+      toRef: z.string().optional().describe('Ref of the element to drop it on, from browser_snapshot.'),
+      toText: z.string().optional().describe('Instead of toRef: the visible text of the element to drop it on.'),
+    },
+    async (args) => {
+      if (!args.fromRef && !args.fromText) throw new Error('Give the ref of the element to drag, from browser_snapshot, or its text.');
+      if (!args.toRef && !args.toText) throw new Error('Give the ref of the element to drop it on, from browser_snapshot, or its text.');
+      const result = await call('drag', args);
+      return text(`${result.dragged}\n${tabLine(result)}${navigatedNote(result)}`);
     },
   );
 

@@ -30,7 +30,6 @@ Tabhand is an open-source Chrome extension and command-line tool. It lets AI age
 | `tabGroups` | To keep each agent's tabs in a group of their own |
 | `storage` | To remember which tabs belong to which agent |
 | `alarms` | To check the connection to the helper now and then |
-| `contextMenus` | To add "Name this profile" when you right-click the toolbar icon |
 | `identity` and `identity.email` (optional) | Only if you click "Use this profile's Google email" while naming a profile: Chrome asks you first. Tabhand reads the email once to fill in the name, then gives the permission back |
 
 ## Contact

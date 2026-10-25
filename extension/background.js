@@ -67,8 +67,8 @@ async function restore(kept) {
 }
 
 /**
- * This Chrome profile, as agents see it: an id kept for good, and the name the user gives it
- * (right-click the toolbar icon, "Name this profile"). Agents use the name to tell profiles apart.
+ * This Chrome profile, as agents see it: an id kept for good, and the name the user gives it in
+ * the toolbar panel. Agents use the name to tell profiles apart.
  */
 const profile = { id: '', name: '' };
 const profileReady = chrome.storage.local.get(['profileId', 'profileName']).then(async (stored) => {
@@ -123,13 +123,6 @@ chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === 'install') welcomePending = true;
   connect();
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: 'name-profile', title: 'Name this profile…', contexts: ['action'] });
-  });
-});
-chrome.contextMenus.onClicked.addListener(({ menuItemId }) => {
-  if (menuItemId !== 'name-profile') return;
-  chrome.windows.create({ url: chrome.runtime.getURL('profile.html'), type: 'popup', width: 420, height: 330, focused: true }).catch(() => {});
 });
 chrome.alarms.create('tabhand-tick', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => {
@@ -156,7 +149,7 @@ async function onHostMessage(message) {
   try {
     if (!handler) throw new Error(`Unknown command: ${message.cmd}`);
     if (paused && message.cmd !== 'reload_extension') {
-      throw new Error('The user paused Tabhand in Chrome. Ask them to click the Tabhand toolbar icon to resume.');
+      throw new Error('The user paused Tabhand in Chrome. Ask them to click the Tabhand icon in Chrome’s toolbar and press Resume.');
     }
     const params = message.params ?? {};
     const run = () => handler(message.sessionId, message.label, params, message.theme);
@@ -178,11 +171,11 @@ function updateBadge() {
   chrome.action.setBadgeText({ text: paused ? 'OFF' : missing ? '!' : '' });
   chrome.action.setBadgeBackgroundColor({ color: missing ? '#d97706' : '#6b7280' });
   const named = profile.name ? ` in “${profile.name}”` : '';
-  let title = `Tabhand is on${named}. Click to pause.`;
-  if (paused) title = `Tabhand is paused${named}. Click to resume.`;
-  else if (missing) title = 'Tabhand needs one more step: run npx tabhand setup in Terminal. Click for help.';
+  let title = `Tabhand is on${named}.`;
+  if (paused) title = `Tabhand is paused${named}.`;
+  else if (missing) title = 'Tabhand needs one more step: run npx tabhand setup in Terminal.';
   // Several profiles have Tabhand: a name tells agents which is which.
-  if (!profile.name && helper === 'standby') title += ' Right-click to name this profile for agents.';
+  else if (!profile.name && helper === 'standby') title += ' Name this profile so agents can tell it apart.';
   chrome.action.setTitle({ title });
 }
 
@@ -197,13 +190,38 @@ async function setPaused(value) {
   updateBadge();
 }
 
-chrome.action.onClicked.addListener(async () => {
-  await ready;
-  if (helper === 'missing' && !paused) {
-    chrome.tabs.create({ url: SETUP_URL }).catch(() => {});
-    return;
+// ---------------------------------------------------------------- toolbar panel
+
+/** What the toolbar panel shows: the switch, the helper, the profile's name and each agent's tabs. */
+async function panelState() {
+  await Promise.all([ready, profileReady]);
+  const agents = [];
+  for (const session of Object.values(sessions)) {
+    const tabs = (await Promise.all(session.tabIds.map((tabId) => chrome.tabs.get(tabId).catch(() => null)))).filter(Boolean);
+    if (!tabs.length) continue;
+    agents.push({
+      label: session.label,
+      theme: session.theme,
+      tabs: tabs.map((tab) => ({ id: tab.id, windowId: tab.windowId, url: tab.url || tab.pendingUrl || '' })),
+    });
   }
-  await setPaused(!paused);
+  return { paused, helper, name: profile.name, version: VERSION, agents };
+}
+
+chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  // Only the extension's own pages (the panel, also when it opens as a window), never a web page.
+  if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return;
+  if (message?.type === 'panel') {
+    panelState().then(reply);
+    return true;
+  }
+  if (message?.type === 'set-paused') {
+    ready
+      .then(() => setPaused(Boolean(message.paused)))
+      .then(panelState)
+      .then(reply);
+    return true;
+  }
 });
 
 // ---------------------------------------------------------------- debugger plumbing
@@ -268,6 +286,8 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
   if (method === 'Page.javascriptDialogOpening') void onDialog(source.tabId, params);
   if (method === 'Page.javascriptDialogClosed') dialogs.delete(source.tabId);
+  // While a drag is being made (see dragFrom), Chrome hands over the drag it would start natively.
+  if (method === 'Input.dragIntercepted') interceptedDrags.set(source.tabId, params.data);
   // A new page has no cursor yet: put it back where the agent left it.
   if (method === 'Page.domContentEventFired') void presentCursor(source.tabId);
   const state = loads.get(source.tabId);
@@ -341,7 +361,7 @@ const dialogQuestion = (dialog) =>
   `The page is waiting for an answer to a ${dialog.type} dialog: "${dialog.message}". Answer it with browser_handle_dialog first.`;
 
 /** Steps whose results can tell the agent about a dialog; the others stop with the question. */
-const REPORTS_DIALOGS = new Set(['click', 'type', 'press_key', 'navigate', 'upload_files']);
+const REPORTS_DIALOGS = new Set(['click', 'hover', 'drag', 'type', 'press_key', 'navigate', 'upload_files']);
 
 /** Runs a step in an agent's tab. If the page opens a confirm or prompt meanwhile, returns with it
  * instead of waiting on the blocked page. */
@@ -1160,6 +1180,274 @@ async function pressAt(tabId, x, y, modifiers = 0) {
   await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...press });
 }
 
+/** What the page holds, in a few characters: it changes when something shows up or goes away. */
+const PAGE_LOOK = `document.getElementsByTagName('*').length + ':' + (document.body?.innerText.length ?? 0)`;
+
+/**
+ * Gives what a hover brings up time to appear: at least `least` ms, then until the page has stopped
+ * changing for `quiet` ms, or `most` ms in all (a page that never stops, a clock or a carousel).
+ */
+async function settledAfterHover(tabId, { least = 900, quiet = 500, most = 3000 } = {}) {
+  const look = () => send(tabId, 'Runtime.evaluate', { expression: PAGE_LOOK, returnByValue: true }).then((reply) => reply.result.value, () => null);
+  const started = Date.now();
+  let seen = await look();
+  let changed = started;
+  while (Date.now() - started < most) {
+    await sleep(100);
+    const now = await look();
+    if (now !== seen) {
+      seen = now;
+      changed = Date.now();
+    }
+    if (Date.now() - started >= least && Date.now() - changed >= quiet) break;
+  }
+}
+
+/** tabId -> the drag Chrome would have started natively, while a drag is being made */
+const interceptedDrags = new Map();
+
+/**
+ * The element a ref or some text points at, for steps that act on one (hover, drag). Notes say so
+ * when the text matched several elements and the first was used.
+ */
+async function targetElement(tabId, { ref, text }, verb, notes) {
+  if ((ref === undefined || ref === null || ref === '') && text) {
+    const found = await elementByText(tabId, String(text));
+    if (found.count > 1) notes.push(`${found.count} elements show "${text}"; this ${verb} the first. To use another, give more of its text, or its ref from browser_snapshot.`);
+    return found.backendNodeId;
+  }
+  return refToNodeId(ref);
+}
+
+/** What to call an element when telling the agent about it: its label, or the text it shows. */
+async function nameOf(tabId, backendNodeId, fallback) {
+  try {
+    const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId });
+    const { result } = await send(tabId, 'Runtime.callFunctionOn', {
+      objectId: object.objectId,
+      returnByValue: true,
+      functionDeclaration: `function () {
+        const text = this.getAttribute?.('aria-label') || this.innerText || this.textContent || this.getAttribute?.('alt') || this.value || '';
+        return String(text).replace(/\\s+/g, ' ').trim().slice(0, 60);
+      }`,
+    });
+    return result.value || fallback || '';
+  } catch {
+    return fallback || '';
+  }
+}
+
+/** Where an element sits among its siblings, to tell afterwards whether a drag moved it. */
+async function placeOf(tabId, backendNodeId) {
+  try {
+    const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId });
+    const { result } = await send(tabId, 'Runtime.callFunctionOn', {
+      objectId: object.objectId,
+      returnByValue: true,
+      functionDeclaration: `function () {
+        // A ref often names the button or handle inside a row; it is the row that moves.
+        let item = this;
+        while (item.parentElement?.children.length === 1 && item.parentElement !== document.body) item = item.parentElement;
+        const parent = item.parentElement;
+        return { connected: this.isConnected, index: parent ? [...parent.children].indexOf(item) : -1, count: parent ? parent.children.length : 0 };
+      }`,
+    });
+    return result.value;
+  } catch {
+    return null;
+  }
+}
+
+/** Runs on an element: where its centre is on screen right now, and whether it shows there: inside
+ * the window and inside every box around it that clips or scrolls. A drop there lands on it only if
+ * it does. Null if it has no box. */
+const LOOK_AT = `function () {
+  const box = this.getBoundingClientRect();
+  if (!box.width && !box.height) return null;
+  const x = box.left + box.width / 2;
+  const y = box.top + box.height / 2;
+  let shows = x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
+  for (let node = this.parentElement ?? this.getRootNode()?.host; shows && node && node !== document.body && node !== document.documentElement; node = node.parentElement ?? node.getRootNode()?.host) {
+    const style = getComputedStyle(node);
+    if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+    const clip = node.getBoundingClientRect();
+    shows = x >= clip.left && x <= clip.right && y >= clip.top && y <= clip.bottom;
+  }
+  return { x, y, shows };
+}`;
+
+/** Runs on an element: the box of the nearest ancestor that scrolls (not the page itself), or null. */
+const SCROLL_BOX = `function () {
+  for (let node = this.parentElement ?? this.getRootNode()?.host; node && node !== document.body && node !== document.documentElement; node = node.parentElement ?? node.getRootNode()?.host) {
+    const style = getComputedStyle(node);
+    const scrolls = (overflow, size, shown) => /auto|scroll|overlay/.test(overflow) && size > shown;
+    if (scrolls(style.overflowY, node.scrollHeight, node.clientHeight) || scrolls(style.overflowX, node.scrollWidth, node.clientWidth)) {
+      const box = node.getBoundingClientRect();
+      return { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+    }
+  }
+  return null;
+}`;
+
+/** The part of the screen an element scrolls in: its scrolling box where it is on screen, else the whole view. */
+async function scrollAreaOf(tabId, backendNodeId, view) {
+  let box = null;
+  try {
+    const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId });
+    ({ result: { value: box } } = await send(tabId, 'Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: SCROLL_BOX, returnByValue: true }));
+  } catch {}
+  box ??= { left: 0, top: 0, right: view.width, bottom: view.height };
+  return { left: Math.max(0, box.left), top: Math.max(0, box.top), right: Math.min(view.width, box.right), bottom: Math.min(view.height, box.bottom) };
+}
+
+/**
+ * Presses on one point and lets go on an element, moving in small steps, the way a hand drags.
+ * Pages read this three ways, and all three work from here:
+ *  - mouse events (mousedown, mousemove with the button held, mouseup), as sortable lists built
+ *    on SortableJS's fallback mode or a drag handle do;
+ *  - the browser's own HTML5 drag and drop (draggable=true, dragstart, dragover, drop). Chrome
+ *    starts those as an operating system drag, which a background tab never completes, so the
+ *    drag is taken over (Input.setInterceptDrags) and played into the page as drag events;
+ *  - pointer events, which Chrome makes from the same mouse events.
+ * The button is held still for a moment first, as lists that want a press delay (dnd-kit's) need.
+ * If the element is out of sight, the page is scrolled with the wheel while the item is held, as
+ * a hand would, until it shows. onGlide hears where the last stretch of the drag is headed.
+ */
+async function dragFrom(tabId, from, destination, { paceMs = 16, holdMs = 300, onGlide } = {}) {
+  const STEPS = 12;
+  const group = 'tabhand-drag';
+  interceptedDrags.delete(tabId);
+  await send(tabId, 'Input.setInterceptDrags', { enabled: true });
+  let native = null;
+  let last = { x: Math.round(from.x), y: Math.round(from.y) };
+  let reached = true;
+  /** Moves the held item to x, y: a mouse move, or, once Chrome has handed over a native drag, a dragOver. */
+  const moveTo = async (x, y) => {
+    last = { x: Math.round(x), y: Math.round(y) };
+    if (native) {
+      await send(tabId, 'Input.dispatchDragEvent', { type: 'dragOver', ...last, data: native });
+    } else {
+      await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', ...last, button: 'left', buttons: 1 });
+      // Moving far enough on a draggable element is what starts a native drag.
+      native = interceptedDrags.get(tabId) ?? null;
+      if (native) await send(tabId, 'Input.dispatchDragEvent', { type: 'dragEnter', ...last, data: native });
+    }
+  };
+  try {
+    const { object } = await send(tabId, 'DOM.resolveNode', { backendNodeId: destination, objectGroup: group });
+    /** The destination now: its centre and whether it shows there (see LOOK_AT). */
+    const look = () =>
+      send(tabId, 'Runtime.callFunctionOn', { objectId: object.objectId, functionDeclaration: LOOK_AT, returnByValue: true }).then(
+        (reply) => reply.result.value,
+        () => null,
+      );
+    if (!(await look())) throw new Error('The element to drop on is not visible on the page. Take a new browser_snapshot.');
+    await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', ...last });
+    await send(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...last, button: 'left', buttons: 1, clickCount: 1 }).catch((error) => {
+      if (!(error instanceof Interrupted)) throw error;
+    });
+    await sleep(holdMs);
+
+    let target = await look();
+    if (target && !target.shows) {
+      // Out of sight. Start the drag with a nudge towards it (libraries lift the item on the first
+      // movement, and some drop it if the page scrolls before that), then scroll while holding it.
+      reached = false;
+      const { cssVisualViewport: view } = await send(tabId, 'Page.getLayoutMetrics');
+      const toward = (distance) => Math.sign(distance) * Math.min(Math.abs(distance), 5);
+      for (let step = 1; step <= 4; step++) await moveTo(last.x + toward(target.x - last.x), last.y + toward(target.y - last.y));
+      const within = (value, low, high) => Math.min(Math.max(value, low), high);
+      // First with the wheel, as a hand would. Some libraries put the held item under the pointer, so
+      // the wheel never reaches the page; they scroll by themselves when it is held near the edge of
+      // the box, so then that.
+      let mode = 'wheel';
+      let stuck = 0;
+      let flips = 0;
+      let heading = 0;
+      let movedAt = Date.now();
+      for (const until = Date.now() + 12_000; Date.now() < until; ) {
+        const dx = target.x - last.x;
+        const dy = target.y - last.y;
+        const outside = (point, size) => point < 0 || point > size;
+        // Along the axis it is out of view on; if it is in view but clipped by a box, the longer one.
+        const sideways = outside(target.x, view.clientWidth) || (!outside(target.y, view.clientHeight) && Math.abs(dx) > Math.abs(dy));
+        let area = null;
+        if (mode === 'wheel') {
+          // Bring it up to where the item is held, in steps of at most 600.
+          const gap = sideways ? dx : dy;
+          const wheel = Math.sign(gap) * Math.min(Math.max(Math.round(Math.abs(gap)), 1), 600);
+          await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', ...last, deltaX: sideways ? wheel : 0, deltaY: sideways ? 0 : wheel, buttons: 1 });
+          await moveTo(last.x, last.y);
+          // Pages that scroll or draw a long list as they go need a moment to catch up.
+          await sleep(80);
+        } else {
+          // They scroll faster the closer to the edge the item is held, and keep going while it is in
+          // the edge zone: hold it right at the edge while far away, and ease off as it gets near.
+          area = await scrollAreaOf(tabId, destination, { width: view.clientWidth, height: view.clientHeight });
+          const size = sideways ? area.right - area.left : area.bottom - area.top;
+          const away = sideways ? target.x - (area.left + area.right) / 2 : target.y - (area.top + area.bottom) / 2;
+          const inset = Math.max(4, 0.2 * size * (1 - Math.min(Math.max(Math.abs(away) / 800, 0.08), 1)));
+          const edge = away > 0 ? 1 : -1;
+          const x = sideways ? (edge > 0 ? area.right - inset : area.left + inset) : within(last.x, area.left + 6, area.right - 6);
+          const y = sideways ? within(last.y, area.top + 6, area.bottom - 6) : edge > 0 ? area.bottom - inset : area.top + inset;
+          if (Math.abs(x - last.x) > 1 || Math.abs(y - last.y) > 1) await moveTo(x, y);
+          await sleep(10);
+        }
+        const now = await look();
+        if (!now) break;
+        const moved = Math.hypot(now.x - target.x, now.y - target.y) > 1;
+        // Pages that scroll on their own as well make the wheel overshoot back and forth.
+        const goes = Math.sign(sideways ? now.x - last.x : now.y - last.y);
+        if (mode === 'wheel' && heading !== 0 && goes !== heading) flips++;
+        heading = goes;
+        target = now;
+        // Arrived: it shows, and (when scrolling by the edge) it is clear of the edge zones, so that
+        // letting go there does not scroll on.
+        const middle = (box, point) => (sideways ? Math.abs(point.x - (box.left + box.right) / 2) < 0.25 * (box.right - box.left) : Math.abs(point.y - (box.top + box.bottom) / 2) < 0.25 * (box.bottom - box.top));
+        if (now.shows && (!area || middle(area, now))) {
+          reached = true;
+          if (mode === 'edge') await moveTo(now.x, now.y);
+          break;
+        }
+        if (mode === 'wheel' && flips >= 2) {
+          mode = 'edge';
+          movedAt = Date.now();
+        } else if (moved) {
+          stuck = 0;
+          movedAt = Date.now();
+        } else if (mode === 'wheel' ? ++stuck >= 2 : Date.now() - movedAt > 800) {
+          // Not getting closer: the page can't scroll that way, or something else is in the way.
+          if (mode === 'edge') break;
+          mode = 'edge';
+          movedAt = Date.now();
+        }
+      }
+      // Whatever scrolled may still be settling; libraries measure the lists again a moment after.
+      await sleep(250);
+    }
+
+    // The last stretch: from where the item is held to the element.
+    const end = (await look()) ?? target ?? last;
+    onGlide?.(end);
+    const start = { ...last };
+    for (let step = 1; step <= STEPS; step++) {
+      await moveTo(start.x + ((end.x - start.x) * step) / STEPS, start.y + ((end.y - start.y) * step) / STEPS);
+      await sleep(paceMs);
+    }
+    if (native) {
+      await send(tabId, 'Input.dispatchDragEvent', { type: 'dragOver', ...last, data: native });
+      await send(tabId, 'Input.dispatchDragEvent', { type: 'drop', ...last, data: native });
+    }
+  } finally {
+    // Always let go of the button and give the browser its own drags back, whatever went wrong.
+    await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...last, button: 'left', buttons: 0, clickCount: 1 }).catch(() => {});
+    await send(tabId, 'Input.setInterceptDrags', { enabled: false }).catch(() => {});
+    send(tabId, 'Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => {});
+    interceptedDrags.delete(tabId);
+  }
+  return { native: Boolean(native), reached };
+}
+
 /** uploadId -> the session sending it and each file's base64 pieces, until upload_files */
 const uploads = new Map();
 
@@ -1278,25 +1566,33 @@ function refToNodeId(ref) {
 /**
  * Plain elements a page made clickable without saying so (a div with a click handler), which the
  * accessibility tree has no role for: those its style gives the pointing hand. Only the outermost
- * of each, since what's inside inherits the cursor.
+ * of each, since what's inside inherits the cursor. Also the elements that say they can be dragged
+ * (draggable="true", as the rows of a sortable list do), so a drag can name the one it means.
  */
 async function pointerElements(tabId) {
-  const found = new Set();
+  const clickable = new Set();
+  const draggable = new Set();
   try {
     const { documents, strings } = await send(tabId, 'DOMSnapshot.captureSnapshot', { computedStyles: ['cursor'] });
     const pointer = strings.indexOf('pointer');
-    if (pointer < 0) return found;
+    const draggableName = strings.indexOf('draggable');
+    const isTrue = strings.indexOf('true');
     for (const { nodes, layout } of documents) {
-      const pointing = new Map(layout.nodeIndex.map((node, i) => [node, layout.styles[i]?.[0] === pointer]));
+      const pointing = new Map(layout.nodeIndex.map((node, i) => [node, pointer >= 0 && layout.styles[i]?.[0] === pointer]));
       for (const [node, isPointer] of pointing) {
-        if (!isPointer || nodes.nodeType[node] !== 1) continue;
+        if (nodes.nodeType[node] !== 1) continue;
+        const attributes = nodes.attributes?.[node] ?? [];
+        for (let i = 0; i + 1 < attributes.length; i += 2) {
+          if (attributes[i] === draggableName && attributes[i + 1] === isTrue) draggable.add(nodes.backendNodeId[node]);
+        }
+        if (!isPointer) continue;
         let parent = nodes.parentIndex[node];
         while (parent >= 0 && !pointing.has(parent)) parent = nodes.parentIndex[parent];
-        if (parent < 0 || !pointing.get(parent)) found.add(nodes.backendNodeId[node]);
+        if (parent < 0 || !pointing.get(parent)) clickable.add(nodes.backendNodeId[node]);
       }
     }
   } catch {}
-  return found;
+  return { clickable, draggable };
 }
 
 /** Finds the element showing some text, for clicks on things a snapshot gives no ref: the innermost
@@ -1444,6 +1740,11 @@ const PAGE_TIMING = `(() => {
   };
 })()`;
 
+async function takeSnapshot(tabId) {
+  const { nodes } = await send(tabId, 'Accessibility.getFullAXTree');
+  return renderSnapshot(nodes, await pointerElements(tabId));
+}
+
 const handlers = {
   async open_tab(sessionId, label, { url }, theme) {
     const target = url ? normalizeUrl(url) : null;
@@ -1485,21 +1786,13 @@ const handlers = {
 
   async snapshot(sessionId, _label, { tabId }) {
     await ownedTab(sessionId, tabId);
-    const { nodes } = await send(tabId, 'Accessibility.getFullAXTree');
-    return { ...(await describe(tabId)), snapshot: renderSnapshot(nodes, { clickable: await pointerElements(tabId) }) };
+    return { ...(await describe(tabId)), snapshot: await takeSnapshot(tabId) };
   },
 
   async click(sessionId, _label, { tabId, ref, text, debugCursor }) {
     await ownedTab(sessionId, tabId);
-    let backendNodeId;
     const notes = [];
-    if ((ref === undefined || ref === null || ref === '') && text) {
-      const found = await elementByText(tabId, String(text));
-      backendNodeId = found.backendNodeId;
-      if (found.count > 1) notes.push(`${found.count} elements show "${text}"; this clicked the first. To click another, give more of its text, or its ref from browser_snapshot.`);
-    } else {
-      backendNodeId = refToNodeId(ref);
-    }
+    const backendNodeId = await targetElement(tabId, { ref, text }, 'clicked', notes);
     const noted = (result) => (notes.length ? { ...result, notes } : result);
     const { node } = await send(tabId, 'DOM.describeNode', { backendNodeId }).catch(() => ({ node: {} }));
     if (node.nodeName === 'OPTION') {
@@ -1526,6 +1819,66 @@ const handlers = {
     await pressAt(tabId, x, y, modifiers);
     const navigated = await settle();
     return noted({ ...(await describe(tabId)), navigated, opened: await takeOpened(tabId) });
+  },
+
+  // Moves the pointer onto an element and leaves it there, for controls that only show while the
+  // pointer is over something (a delete button on an image). Returns a fresh snapshot to find them in.
+  async hover(sessionId, _label, { tabId, ref, text }) {
+    await ownedTab(sessionId, tabId);
+    if ((ref === undefined || ref === null || ref === '') && !text) throw new Error('Give the ref of the element to hover, from browser_snapshot, or its text.');
+    const notes = [];
+    const backendNodeId = await targetElement(tabId, { ref, text }, 'hovered', notes);
+    const { x, y } = await elementCenter(tabId, backendNodeId);
+    await showCursor(tabId, sessionId, x, y);
+    // A short approach, so pages that wait for the pointer to travel in (menus that look at the
+    // mouse's direction, mouseenter after a mousemove) see it arrive rather than appear.
+    await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: x - 3, y: y - 3 });
+    await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    // Hover menus often fade in, or wait a beat before opening, and cards (a link preview, a user's
+    // profile) ask a server for their contents first.
+    await settledAfterHover(tabId);
+    return { ...(await describe(tabId)), snapshot: await takeSnapshot(tabId), ...(notes.length ? { notes } : {}) };
+  },
+
+  // Presses on one element and lets go on another. See dragFrom for what pages see.
+  async drag(sessionId, _label, { tabId, fromRef, fromText, toRef, toText }) {
+    await ownedTab(sessionId, tabId);
+    const missing = (ref, text) => (ref === undefined || ref === null || ref === '') && !text;
+    if (missing(fromRef, fromText)) throw new Error('Give the ref of the element to drag, from browser_snapshot, or its text.');
+    if (missing(toRef, toText)) throw new Error('Give the ref of the element to drop it on, from browser_snapshot, or its text.');
+    const notes = [];
+    const source = await targetElement(tabId, { ref: fromRef, text: fromText }, 'dragged', notes);
+    const destination = await targetElement(tabId, { ref: toRef, text: toText }, 'dropped on', notes);
+    const sourceName = await nameOf(tabId, source, fromText);
+    const destinationName = await nameOf(tabId, destination, toText);
+    // Only the source is scrolled to: the destination, if out of sight, is scrolled to while the item is held.
+    const from = await elementCenter(tabId, source);
+    const before = await placeOf(tabId, source);
+    const watching = await watched(tabId);
+    await showCursor(tabId, sessionId, from.x, from.y, { click: true });
+    // While the user watches, the cursor glides over as the item is dragged.
+    let glide = Promise.resolve();
+    const settle = watchNavigation(tabId);
+    const { native, reached } = await dragFrom(tabId, from, destination, {
+      paceMs: watching ? 45 : 16,
+      onGlide: (to) => { glide = showCursor(tabId, sessionId, to.x, to.y); },
+    });
+    await glide;
+    const navigated = await settle();
+    if (!reached) notes.push('Could not scroll the drop target into view while dragging, so the item was let go as near as it could get.');
+    // Tell the agent what changed, if the page shows it: where the dragged element ended up. Pages
+    // that keep their lists in state redraw a moment after the button is let go.
+    let after = await placeOf(tabId, source);
+    for (let wait = 0; wait < 5 && before && after?.connected && after.index === before.index && after.count === before.count; wait++) {
+      await sleep(100);
+      after = await placeOf(tabId, source);
+    }
+    const quoted = (name) => (name ? `"${name}"` : 'the element');
+    let said = `Dragged ${quoted(sourceName)} onto ${quoted(destinationName)}.`;
+    if (!after?.connected) said += ' The page redrew the area; take a new snapshot to see the result.';
+    else if (before && (after.index !== before.index || after.count !== before.count)) said += ` It moved from position ${before.index + 1} of ${before.count} to ${after.index + 1} of ${after.count} among its siblings.`;
+    else said += ' It is in the same place among its siblings; take a new snapshot to see whether the page changed.';
+    return { ...(await describe(tabId)), navigated, dragged: said, nativeDrag: native, opened: await takeOpened(tabId), ...(notes.length ? { notes } : {}) };
   },
 
   // Files arrive in pieces: messages to an extension are capped at 1 MB.

@@ -1,6 +1,6 @@
-// Naming a Chrome profile, in a throwaway Chrome for Testing profile (never your real Chrome): the
-// name saved on the extension's "Name this profile" page reaches agents, and shows in the toolbar
-// icon's tooltip.
+// The toolbar panel, in a throwaway Chrome for Testing profile (never your real Chrome): the name
+// saved there reaches agents and shows in the toolbar icon's tooltip, the panel lists an agent's
+// tabs, and its switch pauses and resumes every agent.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -75,20 +75,23 @@ try {
   let r = await one.call('browser_list_profiles');
   check('one unnamed profile at first', !r.error && /one Chrome profile/.test(r.text) && /Unnamed \(id [a-f0-9-]{8}\): on/.test(r.text), r.text);
 
-  // The service worker: the menu item and the optional permissions are there.
+  // The service worker: the toolbar opens the panel, and the optional permissions are there.
   const { targetInfos } = await cdp.send('Target.getTargets');
   const worker = targetInfos.find((t) => t.type === 'service_worker' && t.url.startsWith(`chrome-extension://${EXTENSION_ID}/`));
   check('the extension is running', Boolean(worker));
   const sw = await cdp.attach(worker.targetId);
-  const menu = await cdp.evaluate(sw, `new Promise((resolve) => chrome.contextMenus.update('name-profile', {}, () => resolve(chrome.runtime.lastError?.message ?? 'ok')))`);
-  check('the toolbar icon has a "Name this profile" item', menu === 'ok', menu);
+  const popup = await cdp.evaluate(sw, `chrome.action.getPopup({})`);
+  check('the toolbar icon opens the panel', popup.endsWith('/panel.html'), popup);
+  const menus = await cdp.evaluate(sw, `chrome.runtime.getManifest().permissions.includes('contextMenus')`);
+  check('no right-click menu permission', menus === false);
   const granted = await cdp.evaluate(sw, `chrome.permissions.contains({ permissions: ['identity', 'identity.email'] })`);
   check('the email permission is not granted up front', granted === false);
 
-  // Name the profile on the extension's page, as the user would.
-  const { targetId } = await cdp.send('Target.createTarget', { url: `chrome-extension://${EXTENSION_ID}/profile.html`, background: true });
+  // Name the profile in the panel, as the user would. "#name" opens it with the name field showing,
+  // the way it opens as a window for the email.
+  const { targetId } = await cdp.send('Target.createTarget', { url: `chrome-extension://${EXTENSION_ID}/panel.html#name`, background: true });
   const page = await cdp.attach(targetId);
-  for (let i = 0; i < 40 && !(await cdp.evaluate(page, `document.readyState === 'complete' && Boolean(document.getElementById('name'))`).catch(() => false)); i++) await sleep(100);
+  for (let i = 0; i < 40 && !(await cdp.evaluate(page, `document.readyState === 'complete' && !document.getElementById('naming').hidden`).catch(() => false)); i++) await sleep(100);
 
   // Chrome refuses at once to ask for a permission the manifest doesn't list; one it does list waits
   // for the user (nobody answers here). That tells the email permission can be asked for.
@@ -108,18 +111,47 @@ try {
   check('the email permission can be asked for', email === 'asking the user', email);
   check('and asking does not bring Chrome to the front', frontmostApp() === front, `${front} → ${frontmostApp()}`);
   await cdp.send('Page.reload', {}, page).catch(() => {});
-  for (let i = 0; i < 40 && !(await cdp.evaluate(page, `document.readyState === 'complete' && Boolean(document.getElementById('name'))`).catch(() => false)); i++) await sleep(100);
-  await cdp.evaluate(page, `document.getElementById('name').value = '  Work  '; document.getElementById('form').requestSubmit(); true`);
+  for (let i = 0; i < 40 && !(await cdp.evaluate(page, `document.readyState === 'complete' && !document.getElementById('naming').hidden`).catch(() => false)); i++) await sleep(100);
+  const ready = await cdp.evaluate(page, `document.getElementById('headline').textContent`);
+  check('the panel says agents are ready', ready === 'Agents are ready.', ready);
+  await cdp.evaluate(page, `document.getElementById('name').value = '  Work  '; document.getElementById('naming').requestSubmit(); true`);
   await sleep(600);
-  const saved = await cdp.evaluate(page, `document.getElementById('status').textContent`).catch(() => '(page closed)');
+  const saved = await cdp.evaluate(page, `document.getElementById('name-status').textContent`).catch(() => '(page closed)');
   check('the page says it saved', /Agents now see this profile as “Work”/.test(saved), saved);
 
   r = await one.call('browser_list_profiles');
   check('agents see the new name', !r.error && /"Work" \(id [a-f0-9-]{8}\): on/.test(r.text), r.text);
   const title = await cdp.evaluate(sw, `chrome.action.getTitle({})`);
-  check('the toolbar tooltip names the profile', title === 'Tabhand is on in “Work”. Click to pause.', title);
+  check('the toolbar tooltip names the profile', title === 'Tabhand is on in “Work”.', title);
   r = await one.call('browser_open_tab', { profile: 'work' });
   check('an agent can ask for it by name', !r.error && /^Tab \d+:/.test(r.text) && !/\(in /.test(r.text), r.text);
+
+  // The panel, opened fresh: the agent and its tab, then the switch.
+  const panel = await cdp.attach((await cdp.send('Target.createTarget', { url: `chrome-extension://${EXTENSION_ID}/panel.html`, background: true })).targetId);
+  const read = () => cdp.evaluate(panel, `({ state: document.body.dataset.state, headline: document.getElementById('headline').textContent, chip: document.getElementById('chip').textContent, agents: [...document.querySelectorAll('.agent')].map((row) => row.innerText.replace(/\\s+/g, ' ').trim()), toggle: document.getElementById('toggle').textContent })`).catch(() => ({}));
+  let seen = {};
+  for (let i = 0; i < 30 && seen.state !== 'working'; i++) {
+    await sleep(200);
+    seen = await read();
+  }
+  check('the panel shows the agent working', seen.state === 'working' && seen.headline === 'Agents are working.' && seen.chip === 'Work', JSON.stringify(seen));
+  check('with its name and tab', seen.agents?.length === 1 && /^One 1 tab/.test(seen.agents[0]), JSON.stringify(seen.agents));
+  await cdp.evaluate(panel, `document.getElementById('toggle').click(); true`);
+  for (let i = 0; i < 20 && seen.state !== 'paused'; i++) {
+    await sleep(150);
+    seen = await read();
+  }
+  check('its switch pauses every agent', seen.state === 'paused' && seen.toggle === 'Resume', JSON.stringify(seen));
+  r = await one.call('browser_open_tab');
+  check('and the agent hears how to resume', r.error && /press Resume/.test(r.text), r.text);
+  check('the tooltip says it is paused', (await cdp.evaluate(sw, `chrome.action.getTitle({})`)) === 'Tabhand is paused in “Work”.');
+  await cdp.evaluate(panel, `document.getElementById('toggle').click(); true`);
+  for (let i = 0; i < 20 && seen.state === 'paused'; i++) {
+    await sleep(150);
+    seen = await read();
+  }
+  r = await one.call('browser_open_tab');
+  check('Resume lets agents work again', seen.state === 'working' && !r.error, `${seen.state}; ${r.text}`);
 
   // Chrome stops an extension's service worker now and then. Once it's back, so is the name.
   await cdp.send('Target.closeTarget', { targetId: worker.targetId }).catch(() => {});

@@ -29,7 +29,7 @@ const FOCUS_WATCH_MS = 1_500;
 /** After giving the front back, how long to keep it from Chrome while a popup finishes showing. */
 const FOCUS_GUARD_MS = 1_500;
 /** Actions that can make a page open a tab or a popup. */
-const OPENING_ACTIONS = new Set(['click', 'press_key', 'type']);
+const OPENING_ACTIONS = new Set(['click', 'drag', 'press_key', 'type']);
 
 /** The extension that started this host: Chrome passes its origin as an argument. */
 const extensionId = /chrome-extension:\/\/([a-p]{32})/.exec(process.argv.join(' '))?.[1] ?? null;
@@ -48,7 +48,7 @@ function running(pid) {
 
 /**
  * A Chrome profile as agents see it: an id its extension keeps for good, and the name the user gave
- * it (right-click the toolbar icon). Extensions before 0.9 send neither, so they get a passing id.
+ * it in the toolbar panel. Extensions before 0.9 send neither, so they get a passing id.
  */
 const newProfileId = () => crypto.randomBytes(4).toString('hex');
 const cleanProfile = (given, fallbackId) => ({
@@ -725,7 +725,7 @@ export async function runHost() {
       if (entry.pinned) {
         message = {
           ...message,
-          error: `Tabhand is paused in ${where}, the Chrome profile you chose. Ask the user to click the Tabhand toolbar icon in that profile to resume, or choose another profile with browser_open_tab's profile option.`,
+          error: `Tabhand is paused in ${where}, the Chrome profile you chose. Ask the user to click the Tabhand icon in that profile's Chrome toolbar and press Resume, or choose another profile with browser_open_tab's profile option.`,
         };
       } else {
         // Paused in that profile: new work can go to this profile or to another one standing by,

@@ -79,7 +79,7 @@ function adviseOnCopies(extension, log) {
   if (profiles.length > 1) {
     const name = (profile) => (profile.name ? `"${profile.name}"` : 'an unnamed one');
     log(`✓ Tabhand is in ${profiles.length} Chrome profiles: ${profiles.map(name).join(', ')}. Agents use ${profiles[0].name ? `"${profiles[0].name}"` : 'the first one'} unless you ask for another profile or pause Tabhand there.`);
-    if (profiles.some((profile) => !profile.name)) log('  To ask for a profile by name, right-click the Tabhand icon in it and choose "Name this profile".');
+    if (profiles.some((profile) => !profile.name)) log('  To ask for a profile by name, click the Tabhand icon in it and give it a name at the top of the panel.');
     if (others.some((other) => other.extensionId === extension.id && !other.relay)) log('! One profile runs an older Tabhand helper. Quit Chrome and open it again to update it.');
   }
 }
