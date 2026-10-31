@@ -3,12 +3,14 @@
 
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import readline from 'node:readline/promises';
 import { BridgeClient } from './bridge-client.mjs';
 import { HARNESSES, addTo, harnessStatus, removeFrom } from './harnesses.mjs';
 import { fromCheckout, install, status, uninstall } from './install.mjs';
-import { STORE_EXTENSION_ID, STORE_URL, installDir, installedExtensionDir, launcherPath } from './paths.mjs';
+import { STORE_EXTENSION_ID, STORE_URL, installDir, installedExtensionDir, launcherPath, nativeHostDirs } from './paths.mjs';
 import { VERSION } from './version.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -92,7 +94,25 @@ const BROWSER_APPS = {
   chromium: 'Chromium',
   brave: 'Brave Browser',
   edge: 'Microsoft Edge',
+  arc: 'Arc',
+  dia: 'Dia',
 };
+
+/** What to call each browser in setup's messages. */
+const BROWSER_NAMES = {
+  chrome: 'Chrome',
+  'chrome-beta': 'Chrome Beta',
+  'chrome-canary': 'Chrome Canary',
+  'chrome-for-testing': 'Chrome for Testing',
+  chromium: 'Chromium',
+  brave: 'Brave',
+  edge: 'Edge',
+  arc: 'Arc',
+  dia: 'Dia',
+};
+const browserName = (browser) => BROWSER_NAMES[browser] ?? browser;
+/** "Chrome", "Chrome and Brave", "Chrome, Brave and Arc" (or "Brave or Arc"). */
+const listNames = (names, word = 'and') => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} ${word} ${names.at(-1)}`);
 
 /** Opens a page in the browser (macOS). The new tab also wakes an installed extension, so it connects sooner. */
 function openInBrowser(browser, url) {
@@ -101,6 +121,27 @@ function openInBrowser(browser, url) {
     execFileSync('open', ['-a', BROWSER_APPS[browser], url], { stdio: 'ignore' });
   } catch {}
 }
+
+/** Whether a browser's app is on this Mac. */
+const hasApp = (browser) =>
+  process.platform === 'darwin' &&
+  Boolean(BROWSER_APPS[browser]) &&
+  ['/Applications', path.join(os.homedir(), 'Applications')].some((folder) => fs.existsSync(path.join(folder, `${BROWSER_APPS[browser]}.app`)));
+
+/**
+ * Browsers setup doesn't register with unless asked by name. Chrome for Testing is for tests. In
+ * Arc, making a tab group and taking a screenshot never finish (found with 0.11.0), so an agent
+ * sent there would wait two minutes for nothing; Arc shuts down on December 22, 2026 anyway.
+ */
+const NOT_BY_DEFAULT = new Set(['chrome', 'chrome-for-testing', 'arc']);
+
+/**
+ * The other Chromium browsers on this Mac, besides Chrome. Setup registers the bridge with these
+ * too, so the extension from the Chrome Web Store works in whichever of them the user adds it to.
+ * Their folders are no guide: other apps' helpers (password managers, agents) create one for every
+ * Chromium browser, installed or not.
+ */
+const otherBrowsers = () => Object.keys(nativeHostDirs()).filter((browser) => !NOT_BY_DEFAULT.has(browser) && hasApp(browser));
 
 /** Has Chrome reload the extension, which also restarts the bridge, and waits for it to come back. */
 async function reloadExtension() {
@@ -126,11 +167,14 @@ async function waitForChrome(timeoutMs) {
   return false;
 }
 
-export async function setup({ harnesses: keys, yes = false, wait = true, browser = 'chrome', log = console.log } = {}) {
+export async function setup({ harnesses: keys, yes = false, wait = true, browser: browserGiven, log = console.log } = {}) {
+  const browser = browserGiven ?? 'chrome';
   const chosen = pickHarnesses(keys);
   log(`Tabhand ${VERSION}\n`);
-  await install({ browser });
-  log(`✓ Installed in ${tilde(installDir())} and registered with ${browser === 'chrome' ? 'Chrome' : browser}`);
+  // Asked for one browser by name: just that one. Otherwise Chrome and every other one here.
+  const others = browserGiven ? [] : otherBrowsers();
+  await install({ browser: [browser, ...others] });
+  log(`✓ Installed in ${tilde(installDir())} and registered with ${listNames([browser, ...others].map(browserName))}`);
 
   // Agents
   const launcher = launcherPath();
@@ -185,11 +229,13 @@ One last step: load the extension in Chrome (once).
     log('\nWaiting for Chrome…');
     log((await waitForChrome(5 * 60_000)) ? '✓ Chrome extension connected. All set.' : 'Not connected yet. Check with `tabhand status` once the extension is loaded.');
   } else {
+    const elsewhere = others.map(browserName);
     log(`
-One last step: add the Tabhand extension to Chrome. Opening it in the Chrome Web Store:
+One last step: add the Tabhand extension to ${browserName(browser)}${elsewhere.length ? ` (or ${listNames(elsewhere, 'or')})` : ''}. Opening it in the Chrome Web Store:
   ${STORE_URL}
 Already added it? Then it connects on its own in a moment.`);
-    openInBrowser(browser, STORE_URL);
+    // Chrome isn't on this Mac: open the page in the first other browser that is.
+    openInBrowser(hasApp(browser) ? browser : (others.find(hasApp) ?? browser), STORE_URL);
     if (!wait) return;
     log('\nWaiting for Chrome…');
     if (await waitForChrome(5 * 60_000)) {
@@ -207,7 +253,7 @@ export async function report({ log = console.log } = {}) {
   const extension = state.connected ? await extensionInfo() : null;
   log(`Tabhand ${VERSION}\n`);
   log(state.installed ? `✓ Installed in ${tilde(installDir())}` : '✗ Not installed. Run `npx tabhand setup`.');
-  log(state.registered.length ? `✓ Bridge registered with ${state.registered.join(', ')}` : '✗ Bridge not registered with any browser');
+  log(state.registered.length ? `✓ Bridge registered with ${listNames(state.registered.map(browserName))}` : '✗ Bridge not registered with any browser');
   if (extension) {
     const stale = extension.known && !extension.store && extension.version !== VERSION;
     log(`✓ Chrome extension connected (${describe(extension)}${stale ? `; run \`tabhand setup\` to update it to ${VERSION}` : ''})`);

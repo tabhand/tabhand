@@ -57,8 +57,17 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`);
 };
 
+// Brave and Arc are installed (Arc doesn't work yet, so it's left out). Chrome Canary isn't
+// installed, though another app's helper made it a folder.
+const support = (...parts) => at('Library', 'Application Support', ...parts);
+const hostFile = (...parts) => support(...parts, 'NativeMessagingHosts', 'dev.tabhand.bridge.json');
+fs.mkdirSync(at('Applications', 'Brave Browser.app'), { recursive: true });
+fs.mkdirSync(at('Applications', 'Arc.app'), { recursive: true });
+fs.mkdirSync(support('Google', 'Chrome Canary', 'NativeMessagingHosts'), { recursive: true });
+const canaryHere = fs.existsSync('/Applications/Google Chrome Canary.app');
+
 try {
-  tabhand('setup', '--yes', '--no-wait', '--harness', 'claude,codex,opencode,cursor,gemini,zed');
+  const said = tabhand('setup', '--yes', '--no-wait', '--harness', 'claude,codex,opencode,cursor,gemini,zed');
   const launcher = at('.tabhand', 'bin', 'tabhand');
   const args = (label, theme) => ['mcp', '--label', label, '--theme', theme];
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -70,6 +79,15 @@ try {
     host.path === at('.tabhand', 'bin', 'tabhand-host') && host.allowed_origins.length === 2,
     host.allowed_origins.join(' '),
   );
+  const registeredLine = said.split('\n').find((line) => line.includes('registered with')) ?? '';
+  check(
+    'registers it with the other browsers installed here too',
+    same(json(hostFile('BraveSoftware', 'Brave-Browser')), host) && /registered with Chrome, .*Brave/.test(registeredLine),
+    registeredLine,
+  );
+  check('not with a browser that only has a folder', canaryHere || (!fs.existsSync(hostFile('Google', 'Chrome Canary')) && !registeredLine.includes('Canary')));
+  check('nor with Arc', !fs.existsSync(hostFile('Arc', 'User Data')) && !registeredLine.includes('Arc'));
+  check('status lists them', /Bridge registered with Chrome, .*Brave/.test(tabhand('status')));
 
   const claude = json(files.claude);
   check(
@@ -130,7 +148,10 @@ try {
       !json(files.gemini).mcpServers?.tabhand &&
       !json(files.zed).context_servers?.tabhand,
   );
-  check('remove deletes the install and the bridge registration', !fs.existsSync(at('.tabhand')) && !fs.existsSync(at('Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts', 'dev.tabhand.bridge.json')));
+  check(
+    'remove deletes the install and the bridge registrations',
+    !fs.existsSync(at('.tabhand')) && !fs.existsSync(hostFile('Google', 'Chrome')) && !fs.existsSync(hostFile('BraveSoftware', 'Brave-Browser')),
+  );
 } catch (error) {
   check('test run', false, error.stderr?.toString() || error.message);
 } finally {

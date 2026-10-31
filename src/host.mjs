@@ -6,7 +6,7 @@
 // directory only the current user can read, and every client must present a token from that
 // directory. The log records lifecycle events only, never page content, URLs or typed text.
 
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -91,8 +91,30 @@ function frontPid() {
 /**
  * Brings apps back to the front, through AppKit (so macOS asks for no permission). Starting
  * osascript takes a few hundred milliseconds, so one stays running and takes a pid per line.
+ * It exits at the end of its input, which comes when the bridge goes, however it goes. NSData's
+ * length reaches JavaScript as a string, so it has to be compared as a number.
  */
-const ACTIVATOR = `ObjC.import('AppKit');
+export const ACTIVATOR = `ObjC.import('AppKit');
+const input = $.NSFileHandle.fileHandleWithStandardInput;
+let pending = '';
+for (;;) {
+  const data = input.availableData;
+  if (Number(data.length) === 0) break;
+  pending += $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js;
+  let end;
+  while ((end = pending.indexOf('\\n')) >= 0) {
+    const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(pending.slice(0, end)));
+    pending = pending.slice(end + 1);
+    if (app.js) app.activateWithOptions($.NSApplicationActivateAllWindows);
+  }
+}`;
+
+/**
+ * The helper as Tabhand 0.8.0 to 0.11.0 started it, word for word. Its check for the end of input
+ * never matched, so once its bridge was gone it kept a CPU core busy until the Mac restarted. Keep
+ * this as it is: it's how stopLeakedActivators recognizes those helpers.
+ */
+export const LEAKY_ACTIVATOR = `ObjC.import('AppKit');
 const input = $.NSFileHandle.fileHandleWithStandardInput;
 let pending = '';
 for (;;) {
@@ -119,6 +141,47 @@ function startActivator() {
 function activate(pid) {
   startActivator();
   if (activator) activator.stdin.write(`${pid}\n`);
+}
+
+/**
+ * Stops the helpers an older Tabhand left spinning (see LEAKY_ACTIVATOR). Only an osascript that
+ * runs exactly that script and whose bridge is gone (launchd adopted it, so its parent is pid 1).
+ * A helper whose older bridge is still running, and any other osascript, are left alone.
+ */
+function stopLeakedActivators() {
+  if (process.platform !== 'darwin') return;
+  // ps shows each newline in the script as \012.
+  const leaked = `osascript -l JavaScript -e ${LEAKY_ACTIVATOR.replaceAll('\n', '\\012')}`;
+  execFile('ps', ['-axww', '-o', 'pid=,ppid=,args='], { timeout: 5000, maxBuffer: 32 * 1024 * 1024 }, (error, out) => {
+    if (error) return;
+    let stopped = 0;
+    for (const line of out.split('\n')) {
+      const [, pid, ppid, args] = /^\s*(\d+)\s+(\d+) (.*)$/.exec(line) ?? [];
+      if (ppid !== '1' || args !== leaked) continue;
+      try {
+        process.kill(Number(pid));
+        stopped++;
+      } catch {}
+    }
+    if (stopped) log(`stopped ${stopped} window helper${stopped === 1 ? '' : 's'} an older Tabhand left running`);
+  });
+}
+
+/**
+ * The browser that started this bridge, when it's one Tabhand doesn't work in. The browser runs the
+ * helper itself, so it's our parent. Arc reads Chrome's helper folder, so the extension connects
+ * there, but in Arc making a tab group and taking a screenshot of a background tab never finish:
+ * an agent sent there would wait two minutes for nothing. Arc shuts down on December 22, 2026, and
+ * The Browser Company points its users to Dia, which works.
+ */
+function unsupportedBrowser() {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const app = execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 2000 }).trim();
+    return /\/Arc\.app\/Contents\/MacOS\/Arc$/.test(app) ? 'Arc' : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The slower way, through Launch Services, for when activating directly didn't hold. */
@@ -209,6 +272,19 @@ export async function runHost() {
   try {
     if (fs.statSync(logPath()).size > 1_000_000) fs.truncateSync(logPath(), 0);
   } catch {}
+  stopLeakedActivators();
+
+  const unsupported = unsupportedBrowser();
+  if (unsupported) {
+    // Stay connected, or the extension starts a new bridge every 30 seconds, but run no bridge and
+    // join none, so agents never see this browser.
+    log(`started by ${unsupported}, which Tabhand doesn't support; staying out of agents' way`);
+    const leave = () => process.exit(0);
+    process.stdin.on('end', leave);
+    process.stdin.on('close', leave);
+    process.stdin.resume();
+    return;
+  }
 
   let extensionVersion = null;
   /** This Chrome profile. */
@@ -257,6 +333,8 @@ export async function runHost() {
   process.stdout.on('error', stop);
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
+  // However this process ends (a crash included), the helper goes with it.
+  process.on('exit', () => activator?.kill());
 
   // Standing by, this profile still does work the bridge hands it while the bridge's own profile
   // is paused: requests go to this extension, and its answers go back over the same line.

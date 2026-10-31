@@ -14,6 +14,8 @@ const HELP = `Tabhand: let your AI agents use your own Chrome, in background tab
                       --harness claude,codex   only these agents (default: every one found)
                       --yes                    don't ask before changing agent settings
                       --no-wait                don't wait for Chrome to connect
+                      --browser brave          only this browser (default: Chrome, and Brave,
+                                               Edge and Dia when they're on this machine)
   tabhand status    Check the install, the Chrome connection and each agent
   tabhand remove    Take Tabhand out of your agents and off this machine
 

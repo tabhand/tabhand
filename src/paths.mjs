@@ -45,6 +45,10 @@ export function nativeHostDirs() {
       chromium: path.join(base, 'Chromium', 'NativeMessagingHosts'),
       brave: path.join(base, 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts'),
       edge: path.join(base, 'Microsoft Edge', 'NativeMessagingHosts'),
+      // Arc and Dia (The Browser Company's) keep their profiles, and the helpers their extensions
+      // talk to, under "User Data".
+      arc: path.join(base, 'Arc', 'User Data', 'NativeMessagingHosts'),
+      dia: path.join(base, 'Dia', 'User Data', 'NativeMessagingHosts'),
     };
   }
   const config = process.env.XDG_CONFIG_HOME || path.join(home, '.config');

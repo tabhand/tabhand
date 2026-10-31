@@ -97,11 +97,13 @@ async function installCopy() {
 function targetDirs({ browser, userDataDir }) {
   if (userDataDir) return [path.join(path.resolve(userDataDir), 'NativeMessagingHosts')];
   const dirs = nativeHostDirs();
-  if (!dirs[browser]) throw new Error(`Unknown browser "${browser}". Use one of: ${Object.keys(dirs).join(', ')}`);
-  return [dirs[browser]];
+  return [browser].flat().map((one) => {
+    if (!dirs[one]) throw new Error(`Unknown browser "${one}". Use one of: ${Object.keys(dirs).join(', ')}`);
+    return dirs[one];
+  });
 }
 
-/** Installs Tabhand's own copy and registers its bridge with a browser (or one profile of it). */
+/** Installs Tabhand's own copy and registers its bridge with a browser (or several, or one profile of one). */
 export async function install({ browser = 'chrome', userDataDir } = {}) {
   await installCopy();
   const manifest = {

@@ -13,7 +13,7 @@
   <a href="https://www.npmjs.com/package/tabhand"><img src="https://img.shields.io/npm/v/tabhand?color=7c3aed&label=npm" alt="npm version"></a>
   <a href="https://chromewebstore.google.com/detail/tabhand/gcpbhianocgipfljeephofdmbpahkmei"><img src="https://img.shields.io/chrome-web-store/v/gcpbhianocgipfljeephofdmbpahkmei?color=1a73e8&label=chrome%20web%20store" alt="Chrome Web Store"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/macOS-Google%20Chrome-4b5563" alt="macOS and Google Chrome">
+  <img src="https://img.shields.io/badge/macOS-Chrome%20%C2%B7%20Brave%20%C2%B7%20Edge%20%C2%B7%20Dia-4b5563" alt="macOS: Chrome, Brave, Edge and Dia">
 </p>
 
 https://github.com/user-attachments/assets/d5fe5c5a-c012-471f-bf3b-10fa754c382d
@@ -24,9 +24,9 @@ https://github.com/user-attachments/assets/d5fe5c5a-c012-471f-bf3b-10fa754c382d
 npx tabhand setup
 ```
 
-Works with Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Copilot and more: [19 agents](#setup-macos-google-chrome) in all, plus anything else that speaks MCP.
+Works with Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Copilot and more: [19 agents](#setup-macos-chrome-brave-edge-or-dia) in all, plus anything else that speaks MCP.
 
-Then add the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/tabhand/gcpbhianocgipfljeephofdmbpahkmei). Setup opens the page for you.
+Then add the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/tabhand/gcpbhianocgipfljeephofdmbpahkmei). Setup opens the page for you. It works in Brave, Edge and Dia too.
 
 ## Why Tabhand
 
@@ -63,7 +63,7 @@ agent ──stdio──▶ tabhand mcp ──Unix socket──▶ native host �
 
 ![Tab badges for each harness](docs/tab-badges.jpg)
 
-## Setup (macOS, Google Chrome)
+## Setup (macOS: Chrome, Brave, Edge or Dia)
 
 ```sh
 npx tabhand setup
@@ -71,7 +71,7 @@ npx tabhand setup
 
 That's all:
 
-- It installs Tabhand in `~/.tabhand` and connects it to Chrome.
+- It installs Tabhand in `~/.tabhand` and connects it to Chrome, and to Brave, Edge and Dia if you have them.
 - It adds Tabhand to every agent it finds, for all your projects. Each new session gets the browser tools, and the server's instructions tell the agent when to reach for them.
 - It asks before changing anything. Where an agent has its own `mcp add` command, setup uses it. Otherwise it edits the agent's settings file in place, keeping comments, and backs up the original to `~/.tabhand/backups`.
 - It opens Tabhand in the Chrome Web Store, so you can add the extension (once), and waits for Chrome to connect.
@@ -82,6 +82,8 @@ Agents it knows:
 - Devin Desktop (Windsurf), Claude Desktop, Cline, Zed
 
 To add it to only some of them, run `npx tabhand setup --harness claude,codex`.
+
+Using Brave, Edge or Dia? Add the extension there from the same Chrome Web Store page. Edge asks you to allow extensions from other stores first. Each browser shows up to agents as one more profile: click the Tabhand icon in it and give it a name, such as "Brave", so agents can ask for it. Arc isn't supported: tab groups and screenshots never finish there, so Tabhand stays out of Arc even if you add the extension. Arc shuts down on December 22, 2026; Dia works.
 
 `tabhand status` checks the install, the Chrome connection and each agent. `tabhand remove` undoes it all. Run `npx tabhand@latest setup` again to update.
 
@@ -124,6 +126,8 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - `npm test` runs all of these except the smoke test.
 - `node test/setup.mjs` runs setup, status and remove in a throwaway home folder holding existing agent configs. It checks that Tabhand gets added, that comments and other settings survive, that a second run changes nothing, and that the launcher serves the MCP server.
 - `node test/package.mjs` packs the npm package, installs the tarball, and runs setup from it.
+- `node test/activator.mjs` checks, on macOS, that the helper the bridge starts to hand the front back to your app goes away with the bridge, even when the bridge is killed, and that a new bridge stops helpers an older Tabhand left running and nothing else.
+- `node test/arc.mjs` checks, on macOS, that a bridge Arc starts stays connected but out of agents' way.
 - `node test/profiles.mjs` runs two bridges against stand-in extensions, "Work" and "Personal". It checks that agents see both by name and can choose one, that a chosen profile stays chosen, and that pausing one profile sends new work to the other.
 - `node test/profile-name.mjs` names a throwaway Chrome for Testing profile in the toolbar panel and checks that agents see the name, and that the panel pauses and resumes agents.
 - `npm run test:e2e` launches a throwaway Chrome for Testing profile, runs two agents in parallel, and checks they can't reach each other's tabs and that the browser never comes to the front.
