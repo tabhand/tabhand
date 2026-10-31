@@ -136,6 +136,7 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - `node test/upload.mjs` checks that files reach a page byte for byte, through a file field or a button's file picker, including files over Chrome's 1 MB message cap.
 - `node test/foreign-frames.mjs` checks that an agent gets through pages where a password manager's autofill menu pops up, using a stand-in extension.
 - `npm run test:smoke` runs a short check against the Chrome you have open.
+- `node test/live.mjs --profile Dia --app Dia` runs every tool in a real browser profile you have Tabhand in (Dia, Brave, Edge or a Chrome profile), through your install: two agents at once on a local test page, checking that their tabs stay apart and that the browser never comes to the front.
 - `node test/cursor-presence.mjs` checks the cursor and tab badge show before the first action, survive page loads, and leave when the agent is done.
 - `node test/load-speed.mjs [--real]` compares how long the agent waits for pages with a plain tab.
 - `node test/cursor-gallery.mjs` renders every cursor theme side by side, and `node test/badge-preview.mjs` every tab badge.

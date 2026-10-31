@@ -198,11 +198,12 @@ let lastOpenedAt = 0;
 /**
  * Chrome brings itself forward when a page opens a tab or a popup, even from a background tab.
  * When an agent's action did that while the user was in another app, give that app the front back,
- * as soon as it happens. Chrome started this process, so it is our parent.
+ * as soon as it happens. The browser doing the work is entry.browserPid: this bridge's own (its
+ * parent), or another browser's when a profile there does it (Brave, Edge or Dia next to Chrome).
  */
 async function keepUserInFront(entry) {
   const user = await entry.frontBefore;
-  if (!user || user === process.ppid) return;
+  if (!user || user === entry.browserPid) return;
   // Chrome can come forward a second time as it finishes showing a popup, so keep watching a
   // little while after giving the front back.
   let guardUntil = 0;
@@ -211,12 +212,12 @@ async function keepUserInFront(entry) {
     const now = Date.now();
     if (guardUntil ? now > guardUntil : (entry.respondedAt && now > entry.respondedAt + FOCUS_WATCH_MS) || now > entry.startedAt + REQUEST_TIMEOUT_MS) return;
     const opened = lastOpenedAt >= entry.startedAt || entry.responseOpened;
-    if (opened && (await frontPid()) === process.ppid) {
-      // A few times at most: past that, it's more likely the user went to Chrome on purpose.
+    if (opened && (await frontPid()) === entry.browserPid) {
+      // A few times at most: past that, it's more likely the user went to the browser on purpose.
       if (handedBack === 3) return;
       if (handedBack < 2) activate(user);
       else openApp(user);
-      if (!handedBack++) log('a page opened a tab and brought Chrome forward; gave the front back');
+      if (!handedBack++) log('a page opened a tab and brought the browser forward; gave the front back');
       guardUntil = Date.now() + FOCUS_GUARD_MS;
       // Give the switch a moment to land before looking again.
       await sleep(200);
@@ -243,7 +244,9 @@ function standBy(info, onLine, onConnect) {
       try {
         token = fs.readFileSync(tokenPath(), 'utf8');
       } catch {}
-      socket.write(JSON.stringify({ type: 'standby', token, extensionId, ...info(), relay: true }) + '\n');
+      // browserPid: the browser this extension runs in (it started this host), which may not be
+      // the bridge's: the bridge watches it to keep the user's app in front.
+      socket.write(JSON.stringify({ type: 'standby', token, extensionId, ...info(), relay: true, browserPid: process.ppid }) + '\n');
       onConnect(socket);
     });
     socket.on('data', (data) => {
@@ -544,6 +547,8 @@ export async function runHost() {
         version: message.version ? String(message.version).slice(0, 20) : null,
         relay: message.relay === true,
         profile: cleanProfile(message.profile, newProfileId()),
+        // Hosts before 0.11.2 don't say; then assume the bridge's own browser, as before.
+        browserPid: Number.isInteger(message.browserPid) && message.browserPid > 1 ? message.browserPid : process.ppid,
       };
       standbys.add(client);
       log('another Chrome profile is standing by');
@@ -599,8 +604,7 @@ export async function runHost() {
       }, REQUEST_TIMEOUT_MS);
       const entry = { socket: client.socket, id: message.id, cmd, params, timer, startedAt: Date.now(), sessionId: client.sessionId, label: client.label, theme: client.theme, tried: new Set() };
       pending.set(id, entry);
-      const forward = (userInChrome) => {
-        entry.userInChrome = userInChrome;
+      const forward = () => {
         // Work on a tab goes where the tab is.
         const tabId = tabOf(params);
         const home = tabId === null ? undefined : homes.get(tabId);
@@ -629,8 +633,12 @@ export async function runHost() {
         // The extension needs to know where the user is: it only hands a Chrome window the focus
         // back when the user was in Chrome, since focusing one brings Chrome to the front.
         entry.frontBefore = frontPid();
-        keepUserInFront(entry).catch(() => {});
-        entry.frontBefore.then((pid) => forward(pid === null ? undefined : pid === process.ppid));
+        entry.frontBefore.then((pid) => {
+          entry.userPid = pid;
+          forward();
+          // After forward, so entry.browserPid says which browser does the work.
+          keepUserInFront(entry).catch(() => {});
+        });
       } else {
         forward();
       }
@@ -695,9 +703,20 @@ export async function runHost() {
   });
 
   /** Sends a request to this profile's extension. */
+  /**
+   * Notes which browser does a request, and whether the user was in that browser when it came in
+   * (known for actions that can open a tab), which tells its extension whether it may focus one of
+   * its windows: that would bring the browser to the front.
+   */
+  function aim(entry, browserPid) {
+    entry.browserPid = browserPid;
+    entry.userInChrome = entry.userPid === undefined || entry.userPid === null ? undefined : entry.userPid === browserPid;
+  }
+
   function toHere(id, entry) {
     entry.via = null;
     entry.triedHere = true;
+    aim(entry, process.ppid);
     toExtension({ type: 'request', id, sessionId: entry.sessionId, label: entry.label, theme: entry.theme, cmd: entry.cmd, params: entry.params, userInChrome: entry.userInChrome });
   }
 
@@ -705,6 +724,7 @@ export async function runHost() {
   function relay(target, id, entry) {
     entry.via = target;
     entry.tried.add(target);
+    aim(entry, target.standby.browserPid);
     send(target.socket, { type: 'relay', rid: id, sessionId: entry.sessionId, label: entry.label, theme: entry.theme, cmd: entry.cmd, params: entry.params, userInChrome: entry.userInChrome });
   }
 
