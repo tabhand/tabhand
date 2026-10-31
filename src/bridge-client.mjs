@@ -15,12 +15,13 @@ export class BridgeClient {
    * conversation, or else parent and cwd: who the agent is (its conversation, or the process that
    * runs it and its folder). If the app restarts this MCP server, the new one gets the old session's
    * tabs back by them.
-   * @param {{sessionId: string, label: string, theme?: string, conversation?: string, parent?: number, cwd?: string}} options
+   * @param {{sessionId: string, label: string, theme?: string, look?: {name?: string, color?: string}, conversation?: string, parent?: number, cwd?: string}} options
    */
-  constructor({ sessionId, label, theme = 'agent', conversation, parent, cwd }) {
+  constructor({ sessionId, label, theme = 'agent', look, conversation, parent, cwd }) {
     this.sessionId = sessionId;
     this.label = label;
     this.theme = theme;
+    this.look = look;
     this.conversation = conversation;
     this.parent = parent;
     this.cwd = cwd;
@@ -51,7 +52,7 @@ export class BridgeClient {
       let welcomed = false;
       socket.setEncoding('utf8');
       socket.once('connect', () => {
-        const hello = { type: 'hello', token, sessionId: this.sessionId, label: this.label, theme: this.theme, profile: this.profile ?? undefined, conversation: this.conversation, parent: this.parent, cwd: this.cwd };
+        const hello = { type: 'hello', token, sessionId: this.sessionId, label: this.label, theme: this.theme, look: this.look, profile: this.profile ?? undefined, conversation: this.conversation, parent: this.parent, cwd: this.cwd };
         socket.write(JSON.stringify(hello) + '\n');
       });
       socket.on('data', (data) => {

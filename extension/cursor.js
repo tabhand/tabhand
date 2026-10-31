@@ -57,54 +57,12 @@ export function tabhandCursor({ action, x, y, label, theme, animate, click, typi
     return element;
   };
 
-  // Small original marks that hint at each harness.
-  const glyphs = {
-    spark: () =>
-      svgEl(
-        'g',
-        { stroke: 'currentColor', 'stroke-width': 1.7, 'stroke-linecap': 'round' },
-        Array.from({ length: 10 }, (_, i) => {
-          const angle = (i * Math.PI) / 5 + 0.2;
-          const inner = i % 2 ? 2.4 : 1.8;
-          const outer = i % 2 ? 6.2 : 7.2;
-          return svgEl('line', {
-            x1: 8 + Math.cos(angle) * inner,
-            y1: 8 + Math.sin(angle) * inner,
-            x2: 8 + Math.cos(angle) * outer,
-            y2: 8 + Math.sin(angle) * outer,
-          });
-        }),
-      ),
-    prompt: () =>
-      svgEl('g', { fill: 'none', stroke: 'currentColor', 'stroke-width': 1.8, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, [
-        svgEl('path', { d: 'M2.5 4.2 L6.3 8 L2.5 11.8' }),
-        svgEl('path', { d: 'M8.6 12 H13.6' }),
-      ]),
-    pixel: () =>
-      svgEl(
-        'g',
-        { fill: 'currentColor' },
-        [
-          [1.5, 1.5], [6.2, 1.5], [10.9, 1.5],
-          [1.5, 6.2], [10.9, 6.2],
-          [1.5, 10.9], [6.2, 10.9], [10.9, 10.9],
-        ].map(([px, py]) => svgEl('rect', { x: px, y: py, width: 3.6, height: 3.6, rx: 0.6 })),
-      ),
-    cube: () =>
-      svgEl('g', { fill: 'none', stroke: 'currentColor', 'stroke-width': 1.4, 'stroke-linejoin': 'round' }, [
-        svgEl('path', { d: 'M8 1.6 L14 5 L14 11 L8 14.4 L2 11 L2 5 Z' }),
-        svgEl('path', { d: 'M2 5 L8 8.4 L14 5 M8 8.4 L8 14.4' }),
-      ]),
-    sparkle: () =>
-      svgEl('path', {
-        fill: 'currentColor',
-        d: 'M8 0.8 C8.6 5 11 7.4 15.2 8 C11 8.6 8.6 11 8 15.2 C7.4 11 5 8.6 0.8 8 C5 7.4 7.4 5 8 0.8 Z',
-      }),
-    orbit: () =>
-      svgEl('g', {}, [
-        svgEl('circle', { cx: 8, cy: 8, r: 2.6, fill: 'currentColor' }),
-        svgEl('ellipse', { cx: 8, cy: 8, rx: 6.6, ry: 3.4, fill: 'none', stroke: 'currentColor', 'stroke-width': 1.3, transform: 'rotate(-28 8 8)' }),
-      ]),
+  // The name tag's icon comes as data (see GLYPHS in themes.js): an element, its attributes and
+  // its children, or text.
+  const build = (spec) => {
+    if (typeof spec === 'string') return document.createTextNode(spec);
+    const [name, attributes = {}, children = []] = spec;
+    return svgEl(name, attributes, children.map(build));
   };
 
   if (!state || !state.host.isConnected || state.themeKey !== theme.key) {
@@ -149,6 +107,7 @@ export function tabhandCursor({ action, x, y, label, theme, animate, click, typi
           inset 0 1px 0 rgba(255, 255, 255, 0.24), inset 0 0 0 1px rgba(255, 255, 255, 0.16);
       }
       .glyph { width: 14px; height: 14px; display: block; color: var(--glyph); overflow: visible; }
+      .tag.plain { padding-left: 10px; }
       .dots { display: none; align-items: center; gap: 2.5px; margin-left: 1px; height: 16px; }
       .typing .dots { display: inline-flex; }
       .dots i { width: 3.5px; height: 3.5px; border-radius: 50%; background: currentColor; animation: dot 1s infinite ease-in-out; }
@@ -181,12 +140,13 @@ export function tabhandCursor({ action, x, y, label, theme, animate, click, typi
 
     const tag = document.createElement('div');
     tag.className = 'tag';
-    const glyph = svgEl('svg', { class: 'glyph', viewBox: '0 0 16 16' }, [(glyphs[theme.glyph] ?? glyphs.orbit)()]);
     const name = document.createElement('span');
     const dots = document.createElement('span');
     dots.className = 'dots';
     dots.append(document.createElement('i'), document.createElement('i'), document.createElement('i'));
-    tag.append(glyph, name, dots);
+    if (theme.glyphShape) tag.append(svgEl('svg', { class: 'glyph', viewBox: '0 0 16 16' }, [build(theme.glyphShape)]));
+    else tag.classList.add('plain');
+    tag.append(name, dots);
 
     root.append(pointer, tag);
     document.documentElement.append(host);

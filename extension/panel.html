@@ -310,6 +310,242 @@
         color: var(--ink);
         font: inherit;
       }
+      footer .links {
+        display: flex;
+        flex-shrink: 0;
+        gap: 10px;
+      }
+      /* The gear: settings, where agents' cursor look lives. */
+      .gear {
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 27px;
+        height: 27px;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.55);
+        backdrop-filter: blur(8px);
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+        color: var(--ink);
+      }
+      .gear:hover {
+        background: rgba(255, 255, 255, 0.85);
+      }
+      [data-view='cursor'] .gear {
+        background: var(--ink);
+        box-shadow: none;
+        color: var(--paper);
+      }
+
+      /* The cursor view: a page with the cursor on it, then the choices. It has to fit Chrome's
+         popup, 600 px tall at most, so the painted band is shorter here. */
+      [data-view='cursor'] .band {
+        height: 100px;
+      }
+      #look-status:empty {
+        display: none;
+      }
+      #customize .pill {
+        margin-top: 4px;
+      }
+      .stage {
+        position: relative;
+        height: 86px;
+        margin: 2px -2px 11px;
+        padding: 13px 16px;
+        border-radius: 14px;
+        background: #fff;
+        box-shadow:
+          0 0 0 1px var(--line),
+          0 12px 26px -20px rgba(0, 0, 0, 0.45);
+        overflow: hidden;
+      }
+      .stage .ln {
+        display: block;
+        width: 76%;
+        height: 7px;
+        margin-bottom: 9px;
+        border-radius: 4px;
+        background: rgba(22, 24, 23, 0.07);
+      }
+      .stage .ln.wide {
+        width: 92%;
+      }
+      .stage .ln.short {
+        width: 48%;
+      }
+      .sample {
+        position: absolute;
+      }
+      .sample .arrow {
+        display: block;
+        overflow: visible;
+        filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.28)) drop-shadow(0 6px 10px var(--glow));
+      }
+      /* The name tag exactly as pages show it (cursor.js). */
+      .sample .tag {
+        position: absolute;
+        left: 21px;
+        top: 28px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        max-width: 190px;
+        padding: 4px 10px 4px 7px;
+        border-radius: 999px;
+        background: var(--pill);
+        box-shadow:
+          0 8px 18px -6px var(--glow),
+          0 1px 2px rgba(0, 0, 0, 0.22),
+          inset 0 1px 0 rgba(255, 255, 255, 0.24),
+          inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+        color: var(--text);
+        font: 600 12px/16px -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+      }
+      .sample .tag.plain {
+        padding-left: 10px;
+      }
+      .sample .tag span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .glyph {
+        flex: none;
+        display: block;
+        width: 14px;
+        height: 14px;
+        overflow: visible;
+        color: var(--glyph);
+      }
+      .seg {
+        display: flex;
+        margin-bottom: 12px;
+        padding: 3px;
+        border-radius: 999px;
+        background: rgba(22, 24, 23, 0.06);
+      }
+      .seg button {
+        flex: 1;
+        padding: 8px 10px;
+        border: 0;
+        border-radius: 999px;
+        background: none;
+        color: var(--mute);
+        font: 600 12px/1 Geist, sans-serif;
+      }
+      .seg button[aria-checked='true'] {
+        background: #fff;
+        box-shadow:
+          0 0 0 1px var(--line),
+          0 1px 3px rgba(0, 0, 0, 0.1);
+        color: var(--ink);
+      }
+      .field {
+        display: block;
+        margin-bottom: 11px;
+      }
+      .field .label {
+        align-items: center;
+        margin: 0 0 7px;
+      }
+      .field .label input {
+        width: 76px;
+        margin-left: auto;
+        padding: 4px 8px;
+        border: 0;
+        border-radius: 6px;
+        background: #fff;
+        box-shadow: 0 0 0 1px var(--line);
+        color: var(--ink);
+        font: 500 11px/1 'Geist Mono', ui-monospace, monospace;
+        letter-spacing: 0;
+        text-transform: none;
+        outline: none;
+      }
+      .text {
+        width: 100%;
+        padding: 9px 12px;
+        border: 0;
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 0 0 1px var(--line);
+        color: var(--ink);
+        font: 13px Geist, sans-serif;
+        outline: none;
+      }
+      .text:focus,
+      .field .label input:focus {
+        box-shadow: 0 0 0 1.5px var(--ink);
+      }
+      .swatches {
+        display: flex;
+        justify-content: space-between;
+      }
+      .swatch {
+        position: relative;
+        width: 23px;
+        height: 23px;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: var(--c);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) inset;
+      }
+      /* Any other color: the system color picker, behind a rainbow ring around the color picked. */
+      .swatch.any {
+        background:
+          radial-gradient(circle, var(--c, #fff) 0 46%, transparent 48%),
+          conic-gradient(#ef4444, #f59e0b, #eab308, #22c55e, #06b6d4, #3b82f6, #8b5cf6, #ec4899, #ef4444);
+        overflow: hidden;
+      }
+      .swatch.any input {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        opacity: 0;
+        cursor: pointer;
+      }
+      .swatch[aria-checked='true'] {
+        box-shadow:
+          0 0 0 2px var(--paper),
+          0 0 0 3.5px var(--ink);
+      }
+      .icons {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 6px;
+      }
+      .icon {
+        display: grid;
+        place-items: center;
+        height: 31px;
+        padding: 0;
+        border: 0;
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 0 0 1px var(--line);
+        color: var(--ink);
+      }
+      .icon:hover {
+        box-shadow: 0 0 0 1px rgba(22, 24, 23, 0.3);
+      }
+      .icon svg {
+        width: 16px;
+        height: 16px;
+        overflow: visible;
+      }
+      .icon[aria-checked='true'] {
+        background: var(--pill);
+        box-shadow:
+          0 0 0 2px var(--paper),
+          0 0 0 3.5px var(--ink);
+        color: var(--text);
+      }
     </style>
   </head>
   <body data-state="away">
@@ -328,6 +564,13 @@
         </svg>
         <b>Tabhand</b>
         <button class="chip" id="chip" type="button" title="Name this profile"></button>
+        <button class="gear" id="settings" type="button" title="Agents’ cursor" aria-label="Settings: agents’ cursor">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
+            <circle cx="8" cy="8" r="5.3" stroke-width="2.6" stroke-dasharray="2.08 2.08" />
+            <circle cx="8" cy="8" r="4.1" stroke-width="1.5" />
+            <circle cx="8" cy="8" r="1.6" stroke-width="1.4" />
+          </svg>
+        </button>
       </div>
       <h1 id="headline"></h1>
     </header>
@@ -356,11 +599,41 @@
         </div>
         <p class="note" id="name-status">Agents use the name to tell your Chrome profiles apart. <button class="link" id="email" type="button">Use this profile’s Google email</button></p>
       </form>
+
+      <section id="customize" hidden>
+        <div class="stage" aria-hidden="true">
+          <i class="ln wide"></i><i class="ln"></i><i class="ln short"></i><i class="ln wide"></i>
+          <div id="samples"></div>
+        </div>
+        <div class="seg" role="radiogroup" aria-label="Whose look agents wear">
+          <button type="button" role="radio" data-mode="own">Each agent’s own</button>
+          <button type="button" role="radio" data-mode="custom">Custom</button>
+        </div>
+        <div id="custom">
+          <label class="field">
+            <span class="label">Name on the tag</span>
+            <input class="text" id="look-name" maxlength="24" placeholder="Each agent’s own name" autocomplete="off" spellcheck="false" />
+          </label>
+          <div class="field">
+            <p class="label">Color <input id="look-hex" maxlength="7" autocomplete="off" spellcheck="false" aria-label="Color as #RRGGBB" /></p>
+            <div class="swatches" id="swatches" role="radiogroup" aria-label="Color"></div>
+          </div>
+          <div class="field">
+            <p class="label">Icon</p>
+            <div class="icons" id="icons" role="radiogroup" aria-label="Icon"></div>
+          </div>
+        </div>
+        <p class="note" id="own-note">Claude wears orange, Codex blue and black, Gemini its gradient: each agent its own name, color and icon.</p>
+        <button class="pill" id="look-save" type="button">Save</button>
+        <p class="note" id="look-status"></p>
+      </section>
     </main>
 
     <footer>
       <span id="footer-text"></span>
-      <button class="link" id="footer-link" type="button"></button>
+      <span class="links">
+        <button class="link" id="footer-link" type="button"></button>
+      </span>
     </footer>
 
     <script type="module" src="panel.js"></script>

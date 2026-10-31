@@ -9,6 +9,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { BridgeClient, OLD_BRIDGE } from './bridge-client.mjs';
 import { detectHarness } from './harness.mjs';
+import { cursorLook } from './settings.mjs';
 import { VERSION } from './version.mjs';
 
 const tabLine = ({ tabId, title, url, profile }) => `Tab ${tabId}: ${title || '(untitled)'} — ${url}${profile ? ` (in ${profile})` : ''}`;
@@ -76,7 +77,9 @@ export async function runMcpServer({ label, theme } = {}) {
       // app says (Claude Code does, and keeps it when it resumes one in a new process), or else the
       // app process and folder.
       const conversation = process.env.CLAUDE_CODE_SESSION_ID;
-      bridge = new BridgeClient({ sessionId: crypto.randomUUID(), ...harness, conversation, parent: process.ppid, cwd: process.cwd() });
+      // The name and color set with `tabhand cursor`, for this agent's cursor and tab group.
+      const look = cursorLook() ?? undefined;
+      bridge = new BridgeClient({ sessionId: crypto.randomUUID(), ...harness, look, conversation, parent: process.ppid, cwd: process.cwd() });
     }
     return bridge;
   };

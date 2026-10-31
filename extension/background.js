@@ -8,7 +8,7 @@
 import { badgeImage, tabhandBadge } from './badge.js';
 import { tabhandCursor } from './cursor.js';
 import { renderSnapshot } from './snapshot.js';
-import { themeFor } from './themes.js';
+import { cleanLook, themeFor } from './themes.js';
 
 const HOST_NAME = 'dev.tabhand.bridge';
 const VERSION = chrome.runtime.getManifest().version;
@@ -78,11 +78,55 @@ const profileReady = chrome.storage.local.get(['profileId', 'profileName']).then
   updateBadge();
 });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local' || !changes.profileName) return;
+  if (area !== 'local') return;
+  if (changes.cursorLook) {
+    chosenLook = cleanLook(changes.cursorLook.newValue);
+    void restyleSessions();
+  }
+  if (!changes.profileName) return;
   profile.name = changes.profileName.newValue ?? '';
   port?.postMessage({ type: 'profile', profile });
   updateBadge();
 });
+
+// ---------------------------------------------------------------- cursor look
+
+/**
+ * The name and color the user picked in the toolbar panel for every agent in this profile, like a
+ * team's name and brand color. It wins over the look an agent's setup asked for (`tabhand cursor`
+ * on the computer), which wins over the agent's own theme.
+ */
+let chosenLook = null;
+const lookReady = chrome.storage.local.get('cursorLook').then((stored) => {
+  chosenLook = cleanLook(stored.cursorLook);
+});
+
+/** How a session's agent shows in its tabs: its cursor's name, theme and icon, and its tab group's. */
+function lookOf(session) {
+  const look = chosenLook ?? session?.look ?? {};
+  return { label: look.name || session?.label, theme: look.color || session?.theme, icon: look.icon };
+}
+
+/** The whole theme a session's cursor, tab icon and tab group wear. */
+function themeOf(session) {
+  const { label, theme, icon } = lookOf(session);
+  return themeFor(theme, { icon, label });
+}
+
+/** Puts a new look on every agent's tab group, cursor and tab icon at once. */
+async function restyleSessions() {
+  await ready;
+  for (const session of Object.values(sessions)) {
+    if (session.groupId !== null) {
+      await chrome.tabGroups.update(session.groupId, { title: lookOf(session).label, color: themeOf(session).group }).catch(() => {});
+    }
+    for (const tabId of session.tabIds) {
+      if (!attached.has(tabId)) continue;
+      badged.delete(tabId);
+      void presentCursor(tabId);
+    }
+  }
+}
 
 // ---------------------------------------------------------------- host connection
 
@@ -132,7 +176,7 @@ chrome.alarms.onAlarm.addListener(() => {
 connect();
 
 async function onHostMessage(message) {
-  await ready;
+  await Promise.all([ready, lookReady]);
   welcomePending = false;
   if (message.type === 'standby' || message.type === 'active') {
     helperAnswersDialogs = true;
@@ -152,7 +196,10 @@ async function onHostMessage(message) {
       throw new Error('The user paused Tabhand in Chrome. Ask them to click the Tabhand icon in Chrome’s toolbar and press Resume.');
     }
     const params = message.params ?? {};
-    const run = () => handler(message.sessionId, message.label, params, message.theme);
+    // The look `tabhand cursor` set on the computer, if the agent's helper sent one (0.12 on).
+    const look = cleanLook(message.look);
+    if (sessions[message.sessionId]) sessions[message.sessionId].look = look;
+    const run = () => handler(message.sessionId, message.label, params, message.theme, look);
     // Steps in a tab can be cut short by a dialog; closing a tab or answering one can't.
     const result =
       Number.isInteger(params.tabId) && !['handle_dialog', 'close_tab'].includes(message.cmd)
@@ -194,18 +241,19 @@ async function setPaused(value) {
 
 /** What the toolbar panel shows: the switch, the helper, the profile's name and each agent's tabs. */
 async function panelState() {
-  await Promise.all([ready, profileReady]);
+  await Promise.all([ready, profileReady, lookReady]);
   const agents = [];
   for (const session of Object.values(sessions)) {
     const tabs = (await Promise.all(session.tabIds.map((tabId) => chrome.tabs.get(tabId).catch(() => null)))).filter(Boolean);
     if (!tabs.length) continue;
+    // The panel names each agent for what it is, in the colors it wears in its tabs.
     agents.push({
       label: session.label,
-      theme: session.theme,
+      theme: lookOf(session).theme,
       tabs: tabs.map((tab) => ({ id: tab.id, windowId: tab.windowId, url: tab.url || tab.pendingUrl || '' })),
     });
   }
-  return { paused, helper, name: profile.name, version: VERSION, agents };
+  return { paused, helper, name: profile.name, version: VERSION, agents, look: chosenLook };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
@@ -770,8 +818,8 @@ async function presentCursor(tabId, { greet = false } = {}) {
       click: false,
       animate: false,
       greet: greet && (await watched(tabId)),
-      label: session.label,
-      theme: themeFor(session.theme),
+      label: lookOf(session).label,
+      theme: themeOf(session),
     });
   } catch {}
   if (badged.get(tabId) !== loads.get(tabId)?.started) void applyBadge(tabId);
@@ -787,7 +835,7 @@ async function applyBadge(tabId) {
   if (!session || !attached.has(tabId)) return;
   const page = loads.get(tabId)?.started;
   try {
-    await inWorld(tabId, BADGE_SOURCE, { action: 'set', href: badgeImage(themeFor(session.theme)) });
+    await inWorld(tabId, BADGE_SOURCE, { action: 'set', href: badgeImage(themeOf(session)) });
     badged.set(tabId, page);
   } catch {}
 }
@@ -833,8 +881,8 @@ async function showCursor(tabId, sessionId, x, y, { click = false, animate } = {
       x,
       y,
       click,
-      label: session?.label,
-      theme: themeFor(session?.theme),
+      label: lookOf(session).label,
+      theme: themeOf(session),
       animate: animate ?? (await watched(tabId)),
     });
   } catch {}
@@ -983,8 +1031,9 @@ async function setCursorHidden(tabId, hidden) {
 
 // ---------------------------------------------------------------- sessions and tabs
 
-function sessionFor(sessionId, label, theme) {
+function sessionFor(sessionId, label, theme, look) {
   sessions[sessionId] ??= { label, theme: theme ?? 'agent', groupId: null, windowId: null, tabIds: [] };
+  if (look !== undefined) sessions[sessionId].look = look;
   return sessions[sessionId];
 }
 
@@ -1049,7 +1098,7 @@ async function addToGroup(session, tabId, windowId) {
     } catch {}
   }
   session.groupId = await retry(() => chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } }));
-  await chrome.tabGroups.update(session.groupId, { title: session.label, color: themeFor(session.theme).group });
+  await chrome.tabGroups.update(session.groupId, { title: lookOf(session).label, color: themeOf(session).group });
 }
 
 async function endSession(sessionId) {
@@ -1058,7 +1107,7 @@ async function endSession(sessionId) {
   for (const tabId of session.tabIds) await detach(tabId);
   if (session.groupId !== null) {
     try {
-      await chrome.tabGroups.update(session.groupId, { title: `${session.label} (done)`, color: 'grey' });
+      await chrome.tabGroups.update(session.groupId, { title: `${lookOf(session).label} (done)`, color: 'grey' });
     } catch {}
   }
   delete sessions[sessionId];
@@ -1746,9 +1795,9 @@ async function takeSnapshot(tabId) {
 }
 
 const handlers = {
-  async open_tab(sessionId, label, { url }, theme) {
+  async open_tab(sessionId, label, { url }, theme, look) {
     const target = url ? normalizeUrl(url) : null;
-    const session = sessionFor(sessionId, label, theme);
+    const session = sessionFor(sessionId, label, theme, look);
     const windowId = await pickWindow(session);
     session.windowId = windowId;
     // Time each step; a slow open gets recorded in diagnostics with the step that stalled.

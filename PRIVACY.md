@@ -1,6 +1,6 @@
 # Tabhand privacy policy
 
-Effective October 17, 2026. Updated October 20, 2026.
+Effective October 17, 2026. Updated November 1, 2026.
 
 Tabhand is an open-source Chrome extension and command-line tool. It lets AI agents that you run on your own computer, such as Claude Code or Codex, use your Chrome.
 
@@ -16,7 +16,7 @@ Tabhand is an open-source Chrome extension and command-line tool. It lets AI age
 - Tabhand has no servers. The developer receives none of your data.
 - No analytics, tracking or ads. Nothing is sold or shared.
 - The helper's log on your computer records only when Chrome and agents connect or disconnect. It never records URLs, page content or anything typed.
-- What the extension stores in Chrome is limited to which tabs belong to which agent, and whether you've paused Tabhand, which is cleared when Chrome restarts; and the name you give a Chrome profile, with a random id for it, which stays until you remove the extension.
+- What the extension stores in Chrome is limited to which tabs belong to which agent, and whether you've paused Tabhand, which is cleared when Chrome restarts; and the name you give a Chrome profile, with a random id for it, and the name, color and icon you pick for agents' cursors, which stay until you remove the extension.
 - The profile's name and id go to the helper on your computer, so your agents can tell your Chrome profiles apart.
 
 ## Permissions

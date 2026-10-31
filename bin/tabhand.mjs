@@ -18,6 +18,12 @@ const HELP = `Tabhand: let your AI agents use your own Chrome, in background tab
                                                Edge and Dia when they're on this machine)
   tabhand status    Check the install, the Chrome connection and each agent
   tabhand remove    Take Tabhand out of your agents and off this machine
+  tabhand cursor    Show or set the name and color every agent's cursor uses on this machine
+                      --name Acme --color '#FF5A1F'   e.g. your team's name and brand color
+                      --icon initial                  the name tag's icon: initial (the name's first
+                                                      letter), sparkle, bolt, star, heart, diamond,
+                                                      dot, check, prompt, cube or none
+                      --reset                         back to each agent's own look
 
   Agents it knows: claude, codex, opencode, cursor, gemini, qwen, vscode, copilot, kiro, amp,
   droid, warp, junie, antigravity, devin, windsurf, claude-desktop, cline, zed
@@ -45,6 +51,22 @@ try {
     case 'uninstall': {
       const { remove } = await import('../src/setup.mjs');
       await remove({ yes: has('--yes', '-y') });
+      break;
+    }
+    case 'cursor': {
+      const { cursorLook, setCursorLook } = await import('../src/settings.mjs');
+      const name = flag('--name');
+      const color = flag('--color');
+      const icon = flag('--icon');
+      const reset = has('--reset');
+      const changing = reset || name !== undefined || color !== undefined || icon !== undefined;
+      const look = changing ? setCursorLook({ name, color, icon, reset }) : cursorLook();
+      const said = look
+        ? `Agents' cursors on this machine show ${look.name ? `"${look.name}"` : "each agent's own name"} in ${look.color ? look.color.toUpperCase() : "each agent's own color"}, with ${look.icon ? `the ${look.icon} icon` : "each agent's own icon"}.`
+        : "Each agent's cursor shows its own name, color and icon.";
+      console.log(said);
+      if (changing) console.log('New agent sessions use it. Restart an agent to change one that is running.');
+      console.log("To change it in one Chrome profile only, click the Tabhand icon in Chrome's toolbar, then the gear.");
       break;
     }
     case 'mcp': {

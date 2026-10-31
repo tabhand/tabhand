@@ -1,7 +1,8 @@
 // The toolbar panel: what agents are doing in this Chrome profile, one switch that pauses them all,
-// and the profile's name. The service worker keeps the state; the panel asks for it while it's open.
+// the profile's name, and the name and color agents' cursors wear here. The service worker keeps the
+// state; the panel asks for it while it's open.
 
-import { themeFor } from './themes.js';
+import { ICONS, cleanLook, glyphShape, isColor, themeFor } from './themes.js';
 
 const $ = (id) => document.getElementById(id);
 const SETUP_COMMAND = 'npx tabhand setup';
@@ -11,6 +12,12 @@ const inWindow = location.hash === '#name';
 
 let state = null;
 let naming = inWindow;
+/** The cursor view (behind the gear): open or not, and the look being tried in it. */
+let looking = false;
+let draft = { mode: 'own', name: '', color: '#e0573c', icon: 'initial' };
+// A few colors that read well on any page; any other comes from the color picker or as #RRGGBB.
+const SWATCHES = ['#E0573C', '#F97316', '#EAB308', '#16A34A', '#0891B2', '#2563EB', '#7C3AED', '#DB2777', '#1F2937'];
+const ICON_NAMES = { initial: 'First letter of the name', sparkle: 'Sparkle', bolt: 'Bolt', star: 'Star', heart: 'Heart', diamond: 'Diamond', dot: 'Dot', check: 'Check', prompt: 'Prompt', cube: 'Cube', none: 'No icon' };
 let dismissed = false;
 let saidSomething = 0;
 
@@ -122,9 +129,15 @@ function render() {
     if (Date.now() > saidSomething) show('note', null);
   }
 
+  // The cursor view takes the panel's body over.
+  document.body.dataset.view = looking ? 'cursor' : 'main';
+  for (const id of ['agents', 'lede', 'command', 'toggle', 'note']) if (looking) $(id).hidden = true;
+  if (looking) headline('Make it', 'yours.');
+  $('customize').hidden = !looking;
+
   // Naming opens by itself where a name matters most: another profile has the agents.
   const form = $('naming');
-  const open = naming || (kind === 'standby' && !name && !dismissed);
+  const open = !looking && (naming || (kind === 'standby' && !name && !dismissed));
   if (open && form.hidden) {
     $('name').value = name;
     form.hidden = false;
@@ -132,9 +145,183 @@ function render() {
   } else if (!open) {
     form.hidden = true;
   }
-  $('footer-text').replaceChildren(...(open ? [`Tabhand ${version}`] : ['This profile: ', Object.assign(document.createElement('b'), { textContent: name || 'not named' })]));
-  $('footer-link').textContent = open ? (inWindow ? 'Close' : 'Cancel') : name ? 'Rename' : 'Name it';
+  const editing = open || looking;
+  $('footer-text').replaceChildren(...(editing ? [`Tabhand ${version}`] : ['This profile: ', Object.assign(document.createElement('b'), { textContent: name || 'not named' })]));
+  $('footer-link').textContent = looking ? 'Back' : editing ? (inWindow ? 'Close' : 'Cancel') : name ? 'Rename' : 'Name it';
+  $('settings').hidden = inWindow;
 }
+
+// ---------------------------------------------------------------- the cursor look
+
+const SVG = 'http://www.w3.org/2000/svg';
+/** Draws an icon from its data (see GLYPHS in themes.js), the way pages draw it. */
+function drawn(spec) {
+  if (typeof spec === 'string') return document.createTextNode(spec);
+  const [name, attributes = {}, children = []] = spec;
+  const element = document.createElementNS(SVG, name);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
+  element.append(...children.map(drawn));
+  return element;
+}
+const iconSvg = (shape, className) => {
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  if (className) svg.setAttribute('class', className);
+  if (shape) svg.append(drawn(shape));
+  return svg;
+};
+/** For "no icon": a circle struck through, only in the picker. */
+const NO_ICON = ['g', { fill: 'none', stroke: 'currentColor', 'stroke-width': 1.4, 'stroke-linecap': 'round' }, [['circle', { cx: 8, cy: 8, r: 6 }], ['path', { d: 'M3.8 12.2 L12.2 3.8' }]]];
+
+const colorVars = (element, theme) => {
+  for (const [property, value] of Object.entries({ '--pill': theme.pill, '--text': theme.text, '--glyph': theme.glyphColor, '--glow': theme.glow })) element.style.setProperty(property, value);
+};
+
+/** An agent's cursor at the size and in the colors pages show it: the arrow and its name tag. */
+function sample(theme, label, x, y) {
+  const box = document.createElement('div');
+  box.className = 'sample';
+  box.style.left = `${x}px`;
+  box.style.top = `${y}px`;
+  colorVars(box, theme);
+  const id = `fill-${Math.random().toString(36).slice(2, 8)}`;
+  const points = '5,4 5.8,23.2 10.6,18.4 19.6,17.8';
+  const arrow = drawn(['svg', { class: 'arrow', width: 32.2, height: 34.5, viewBox: '0 0 28 30' }, [
+    ['defs', {}, [['linearGradient', { id, x1: 0, y1: 0, x2: 0.55, y2: 1 }, [['stop', { offset: 0, 'stop-color': theme.arrow[0] }], ['stop', { offset: 1, 'stop-color': theme.arrow[1] }]]]]],
+    ['polygon', { points, fill: '#fff', stroke: '#fff', 'stroke-width': 4.6, 'stroke-linejoin': 'round' }],
+    ['polygon', { points, fill: `url(#${id})`, stroke: `url(#${id})`, 'stroke-width': 1.4, 'stroke-linejoin': 'round' }],
+    ['path', { d: 'M6.4 7.2 L6.9 19.2', stroke: 'rgba(255,255,255,0.5)', 'stroke-width': 1.1, 'stroke-linecap': 'round' }],
+  ]]);
+  const tag = document.createElement('div');
+  tag.className = theme.glyphShape ? 'tag' : 'tag plain';
+  if (theme.glyphShape) tag.append(iconSvg(theme.glyphShape, 'glyph'));
+  tag.append(Object.assign(document.createElement('span'), { textContent: label }));
+  box.append(arrow, tag);
+  return box;
+}
+
+const customTheme = () => themeFor(draft.color, { icon: draft.icon, label: draft.name || 'Claude' });
+
+function renderSamples() {
+  const samples =
+    draft.mode === 'own'
+      ? [sample(themeFor('claude', { label: 'Claude' }), 'Claude', 34, 4), sample(themeFor('codex', { label: 'Codex' }), 'Codex', 150, 28)]
+      : [sample(customTheme(), draft.name || 'Claude', 70, 12)];
+  $('samples').replaceChildren(...samples);
+}
+
+function renderSwatches() {
+  const picked = draft.color.toLowerCase();
+  const preset = SWATCHES.some((color) => color.toLowerCase() === picked);
+  const buttons = SWATCHES.map((color) => {
+    const button = Object.assign(document.createElement('button'), { type: 'button', className: 'swatch', title: color });
+    button.style.setProperty('--c', color);
+    button.dataset.color = color.toLowerCase();
+    button.setAttribute('role', 'radio');
+    button.setAttribute('aria-checked', String(button.dataset.color === picked));
+    button.addEventListener('click', () => setColor(button.dataset.color));
+    return button;
+  });
+  // Any other color, from the system's color picker.
+  const any = document.createElement('label');
+  any.className = 'swatch any';
+  any.title = 'Any color';
+  any.setAttribute('role', 'radio');
+  any.setAttribute('aria-checked', String(!preset));
+  if (!preset) any.style.setProperty('--c', picked);
+  const picker = Object.assign(document.createElement('input'), { type: 'color', value: picked });
+  picker.setAttribute('aria-label', 'Any color');
+  picker.addEventListener('input', () => setColor(picker.value));
+  any.append(picker);
+  $('swatches').replaceChildren(...buttons, any);
+}
+
+function renderIcons() {
+  const theme = customTheme();
+  const tiles = ICONS.map((icon) => {
+    const tile = Object.assign(document.createElement('button'), { type: 'button', className: 'icon', title: ICON_NAMES[icon] ?? icon });
+    tile.dataset.icon = icon;
+    tile.setAttribute('role', 'radio');
+    tile.setAttribute('aria-checked', String(icon === draft.icon));
+    colorVars(tile, theme);
+    // Each tile shows its icon as it would look on the tag; a monogram shows the name's letter.
+    const shape = icon === 'none' ? NO_ICON : glyphShape({ ...theme, glyph: icon }, draft.name || 'Aa');
+    tile.append(iconSvg(shape));
+    tile.addEventListener('click', () => {
+      draft.icon = icon;
+      renderLook();
+    });
+    return tile;
+  });
+  $('icons').replaceChildren(...tiles);
+}
+
+function renderLook() {
+  for (const button of document.querySelectorAll('.seg button')) button.setAttribute('aria-checked', String(button.dataset.mode === draft.mode));
+  $('custom').hidden = draft.mode !== 'custom';
+  $('own-note').hidden = draft.mode !== 'own';
+  if (document.activeElement !== $('look-hex')) $('look-hex').value = draft.color.toUpperCase();
+  renderSamples();
+  renderSwatches();
+  renderIcons();
+}
+
+function setColor(color) {
+  draft.color = color.toLowerCase();
+  renderLook();
+}
+
+const lookStatus = (message) => {
+  $('look-status').textContent = message;
+};
+
+function startLooking() {
+  const look = state?.look;
+  draft = { mode: look ? 'custom' : 'own', name: look?.name ?? '', color: look?.color ?? '#e0573c', icon: look?.icon ?? 'initial' };
+  looking = true;
+  naming = false;
+  $('look-name').value = draft.name;
+  $('look-save').textContent = 'Save';
+  lookStatus('');
+  renderLook();
+  render();
+}
+
+function stopLooking() {
+  looking = false;
+  render();
+}
+
+$('settings').addEventListener('click', () => (looking ? stopLooking() : startLooking()));
+for (const button of document.querySelectorAll('.seg button')) {
+  button.addEventListener('click', () => {
+    draft.mode = button.dataset.mode;
+    renderLook();
+    if (draft.mode === 'custom') $('look-name').focus();
+  });
+}
+$('look-name').addEventListener('input', () => {
+  draft.name = $('look-name').value;
+  renderSamples();
+  renderIcons();
+});
+$('look-hex').addEventListener('input', () => {
+  const typed = $('look-hex').value.trim();
+  const hex = typed.startsWith('#') ? typed : `#${typed}`;
+  if (isColor(hex)) setColor(hex);
+});
+
+$('look-save').addEventListener('click', async () => {
+  const look = draft.mode === 'custom' ? cleanLook({ name: draft.name, color: draft.color, icon: draft.icon }) : null;
+  if (look) await chrome.storage.local.set({ cursorLook: look });
+  else await chrome.storage.local.remove('cursorLook');
+  $('look-save').textContent = 'Saved';
+  lookStatus(look ? 'Every agent in this profile wears it now, in the tabs it already has open too.' : 'Every agent wears its own look again.');
+  setTimeout(() => {
+    stopLooking();
+    refresh();
+  }, 1300);
+});
 
 async function refresh() {
   try {
@@ -156,10 +343,12 @@ $('command').addEventListener('click', async () => {
 
 const startNaming = () => {
   naming = true;
+  looking = false;
   render();
 };
 $('chip').addEventListener('click', startNaming);
 $('footer-link').addEventListener('click', () => {
+  if (looking) return stopLooking();
   if (!naming && $('naming').hidden) return startNaming();
   if (inWindow) return window.close();
   naming = false;

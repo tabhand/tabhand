@@ -367,6 +367,7 @@ export async function runHost() {
         sessionId: message.sessionId,
         label: message.label,
         theme: message.theme,
+        look: message.look,
         cmd: message.cmd,
         params: message.params ?? {},
         userInChrome: message.userInChrome,
@@ -510,6 +511,16 @@ export async function runHost() {
       }
       client.label = String(message.label ?? 'Agent').replace(/[^\p{L}\p{N} ._-]/gu, '').slice(0, 40) || 'Agent';
       client.theme = /^[a-z]{1,16}$/.test(message.theme) ? message.theme : 'agent';
+      // A name, color and icon for this agent's cursor, from `tabhand cursor`. The extension checks them again.
+      const look = message.look ?? {};
+      client.look =
+        typeof look.name === 'string' || typeof look.color === 'string' || typeof look.icon === 'string'
+          ? {
+              name: String(look.name ?? '').slice(0, 24),
+              color: /^#[0-9a-f]{6}$/i.test(look.color) ? look.color : '',
+              icon: /^[a-z]{1,12}$/.test(look.icon) ? look.icon : '',
+            }
+          : undefined;
       client.conversation = typeof message.conversation === 'string' && /^[\w-]{8,100}$/.test(message.conversation) ? message.conversation : null;
       client.parent = Number.isInteger(message.parent) && message.parent > 1 ? message.parent : null;
       client.cwd = typeof message.cwd === 'string' ? message.cwd.slice(0, 1000) : '';
@@ -602,7 +613,7 @@ export async function runHost() {
         }
         send(client.socket, { type: 'response', id: message.id, ok: false, error: 'Chrome did not answer in time.' });
       }, REQUEST_TIMEOUT_MS);
-      const entry = { socket: client.socket, id: message.id, cmd, params, timer, startedAt: Date.now(), sessionId: client.sessionId, label: client.label, theme: client.theme, tried: new Set() };
+      const entry = { socket: client.socket, id: message.id, cmd, params, timer, startedAt: Date.now(), sessionId: client.sessionId, label: client.label, theme: client.theme, look: client.look, tried: new Set() };
       pending.set(id, entry);
       const forward = () => {
         // Work on a tab goes where the tab is.
@@ -717,7 +728,7 @@ export async function runHost() {
     entry.via = null;
     entry.triedHere = true;
     aim(entry, process.ppid);
-    toExtension({ type: 'request', id, sessionId: entry.sessionId, label: entry.label, theme: entry.theme, cmd: entry.cmd, params: entry.params, userInChrome: entry.userInChrome });
+    toExtension({ type: 'request', id, sessionId: entry.sessionId, label: entry.label, theme: entry.theme, look: entry.look, cmd: entry.cmd, params: entry.params, userInChrome: entry.userInChrome });
   }
 
   /** Hands a request to a standing-by host, whose extension does it in that profile. */
@@ -725,7 +736,7 @@ export async function runHost() {
     entry.via = target;
     entry.tried.add(target);
     aim(entry, target.standby.browserPid);
-    send(target.socket, { type: 'relay', rid: id, sessionId: entry.sessionId, label: entry.label, theme: entry.theme, cmd: entry.cmd, params: entry.params, userInChrome: entry.userInChrome });
+    send(target.socket, { type: 'relay', rid: id, sessionId: entry.sessionId, label: entry.label, theme: entry.theme, look: entry.look, cmd: entry.cmd, params: entry.params, userInChrome: entry.userInChrome });
   }
 
   /** Asks one profile something for the bridge itself; resolves with its answer, whatever it is. */
