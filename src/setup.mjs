@@ -10,7 +10,8 @@ import readline from 'node:readline/promises';
 import { BridgeClient } from './bridge-client.mjs';
 import { HARNESSES, addTo, harnessStatus, removeFrom } from './harnesses.mjs';
 import { fromCheckout, install, status, uninstall } from './install.mjs';
-import { STORE_EXTENSION_ID, STORE_URL, installDir, installedExtensionDir, launcherPath, nativeHostDirs } from './paths.mjs';
+import { STORE_EXTENSION_ID, STORE_URL, WINDOWS, installDir, installedExtensionDir, launcherPath, nativeHostDirs } from './paths.mjs';
+import * as windows from './windows.mjs';
 import { VERSION } from './version.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -116,6 +117,7 @@ const listNames = (names, word = 'and') => (names.length < 2 ? names.join('') : 
 
 /** Opens a page in the browser (macOS). The new tab also wakes an installed extension, so it connects sooner. */
 function openInBrowser(browser, url) {
+  if (WINDOWS) return windows.openInBrowser(browser, url);
   if (process.platform !== 'darwin' || !BROWSER_APPS[browser]) return;
   try {
     execFileSync('open', ['-a', BROWSER_APPS[browser], url], { stdio: 'ignore' });
@@ -124,6 +126,7 @@ function openInBrowser(browser, url) {
 
 /** Whether a browser's app is on this Mac. */
 const hasApp = (browser) =>
+  WINDOWS ? Boolean(windows.browserProgram(browser)) :
   process.platform === 'darwin' &&
   Boolean(BROWSER_APPS[browser]) &&
   ['/Applications', path.join(os.homedir(), 'Applications')].some((folder) => fs.existsSync(path.join(folder, `${BROWSER_APPS[browser]}.app`)));
@@ -141,7 +144,7 @@ const NOT_BY_DEFAULT = new Set(['chrome', 'chrome-for-testing', 'arc']);
  * Their folders are no guide: other apps' helpers (password managers, agents) create one for every
  * Chromium browser, installed or not.
  */
-const otherBrowsers = () => Object.keys(nativeHostDirs()).filter((browser) => !NOT_BY_DEFAULT.has(browser) && hasApp(browser));
+const otherBrowsers = () => (WINDOWS ? windows.browsers() : Object.keys(nativeHostDirs())).filter((browser) => !NOT_BY_DEFAULT.has(browser) && hasApp(browser));
 
 /** Has Chrome reload the extension, which also restarts the bridge, and waits for it to come back. */
 async function reloadExtension() {
@@ -217,13 +220,14 @@ export async function setup({ harnesses: keys, yes = false, wait = true, browser
     adviseOnCopies(extension, log);
   } else if (fromCheckout) {
     const folder = installedExtensionDir();
-    try {
+    if (WINDOWS) windows.copyToClipboard(folder);
+    else try {
       execFileSync('pbcopy', { input: folder });
     } catch {}
     log(`
 One last step: load the extension in Chrome (once).
   1. Open chrome://extensions and turn on Developer mode (top right).
-  2. Click "Load unpacked", press ⌘⇧G and paste this folder (it's on your clipboard):
+  2. Click "Load unpacked", ${WINDOWS ? windows.PICK_FOLDER : 'press ⌘⇧G and paste this folder'} (it's on your clipboard):
      ${folder}`);
     if (!wait) return;
     log('\nWaiting for Chrome…');

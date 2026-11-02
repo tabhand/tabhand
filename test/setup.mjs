@@ -14,6 +14,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { parse } from 'jsonc-parser';
 
+if (process.platform === 'win32') {
+  console.log('SKIP  macOS and Linux; test/setup-windows.mjs covers Windows');
+  process.exit(0);
+}
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tabhand-setup-home-'));
 const env = {

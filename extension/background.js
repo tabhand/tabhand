@@ -9,6 +9,7 @@ import { badgeImage, tabhandBadge } from './badge.js';
 import { tabhandCursor } from './cursor.js';
 import { renderSnapshot } from './snapshot.js';
 import { cleanLook, themeFor } from './themes.js';
+import * as windows from './windows.js';
 
 const HOST_NAME = 'dev.tabhand.bridge';
 const VERSION = chrome.runtime.getManifest().version;
@@ -1425,7 +1426,8 @@ async function dragFrom(tabId, from, destination, { paceMs = 16, holdMs = 300, o
           // Bring it up to where the item is held, in steps of at most 600.
           const gap = sideways ? dx : dy;
           const wheel = Math.sign(gap) * Math.min(Math.max(Math.round(Math.abs(gap)), 1), 600);
-          await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', ...last, deltaX: sideways ? wheel : 0, deltaY: sideways ? 0 : wheel, buttons: 1 });
+          if (await windows.isWindows) await windows.turnWheel(send, tabId, last, sideways ? wheel : 0, sideways ? 0 : wheel, { extra: { buttons: 1 }, settleMs: 80 });
+          else await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', ...last, deltaX: sideways ? wheel : 0, deltaY: sideways ? 0 : wheel, buttons: 1 });
           await moveTo(last.x, last.y);
           // Pages that scroll or draw a long list as they go need a moment to catch up.
           await sleep(80);
@@ -2039,7 +2041,8 @@ const handlers = {
     const x = cssVisualViewport.clientWidth / 2;
     const y = cssVisualViewport.clientHeight / 2;
     const delta = Math.max(1, Math.min(Number(amount) || 600, 10_000));
-    await send(tabId, 'Input.dispatchMouseEvent', {
+    if (await windows.isWindows) await windows.turnWheel(send, tabId, { x, y }, 0, direction === 'up' ? -delta : delta);
+    else await send(tabId, 'Input.dispatchMouseEvent', {
       type: 'mouseWheel',
       x,
       y,
@@ -2070,7 +2073,7 @@ const handlers = {
     }
     if (!keepCursor) await setCursorHidden(tabId, true);
     try {
-      const { data } = await send(tabId, 'Page.captureScreenshot', params);
+      const { data } = (await windows.isWindows) ? await windows.captureScreenshot(send, tabId, params) : await send(tabId, 'Page.captureScreenshot', params);
       return { ...(await describe(tabId)), mimeType: 'image/jpeg', data };
     } finally {
       if (!keepCursor) await setCursorHidden(tabId, false);

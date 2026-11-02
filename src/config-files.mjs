@@ -5,7 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { applyEdits, modify, parse } from 'jsonc-parser';
-import { installDir } from './paths.mjs';
+import { WINDOWS, installDir } from './paths.mjs';
+import * as windows from './windows.mjs';
 
 const read = (file) => {
   try {
@@ -18,7 +19,7 @@ const read = (file) => {
 /** Keeps the file as it was before Tabhand first touched it, in installDir/backups. */
 function backUp(file, text) {
   if (text === null) return;
-  const copy = path.join(installDir(), 'backups', file.replace(/^\/+/, '').replaceAll('/', '__'));
+  const copy = path.join(installDir(), 'backups', WINDOWS ? windows.backupName(file) : file.replace(/^\/+/, '').replaceAll('/', '__'));
   if (fs.existsSync(copy)) return;
   fs.mkdirSync(path.dirname(copy), { recursive: true, mode: 0o700 });
   fs.writeFileSync(copy, text, { mode: 0o600 });

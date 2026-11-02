@@ -5,10 +5,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   HOST_NAME,
   STORE_EXTENSION_ID,
+  WINDOWS,
   appPath,
   dataDir,
   hostLauncherPath,
@@ -19,6 +20,7 @@ import {
   nativeHostDirs,
   socketPath,
 } from './paths.mjs';
+import * as windows from './windows.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const extensionDir = path.join(root, 'extension');
@@ -43,7 +45,8 @@ const oldHostFiles = () => [path.join(dataDir(), 'tabhand-host'), path.join(data
 async function bundlePath() {
   if (process.env.TABHAND_BUNDLED) return fileURLToPath(import.meta.url);
   const buildScript = path.join(root, 'scripts', 'build.mjs');
-  const { buildBundle } = await import(buildScript);
+  // Windows needs a file:// URL to import by path.
+  const { buildBundle } = await import(WINDOWS ? pathToFileURL(buildScript).href : buildScript);
   return buildBundle();
 }
 
@@ -57,6 +60,7 @@ async function installCopy() {
     fs.rmSync(installedExtensionDir(), { recursive: true, force: true });
     fs.cpSync(extensionDir, installedExtensionDir(), { recursive: true });
   }
+  if (WINDOWS) return windows.writeLaunchers();
   // Agents and Chrome both start Tabhand through the launcher. It pins the node binary that ran
   // setup, since agent apps and Chrome don't get your shell's PATH, and drops Node settings meant
   // for other tools (a stale NODE_OPTIONS preload crashes node before our code runs).
@@ -113,6 +117,10 @@ export async function install({ browser = 'chrome', userDataDir } = {}) {
     type: 'stdio',
     allowed_origins: [...new Set([extensionId(), STORE_EXTENSION_ID])].map((id) => `chrome-extension://${id}/`),
   };
+  if (WINDOWS) {
+    const written = windows.register([browser].flat(), manifest, { userDataDir });
+    return { written, extensionId: extensionId(), extensionDir: installedExtensionDir(), launcher: launcherPath() };
+  }
   const written = [];
   for (const dir of targetDirs({ browser, userDataDir })) {
     fs.mkdirSync(dir, { recursive: true });
@@ -125,6 +133,7 @@ export async function install({ browser = 'chrome', userDataDir } = {}) {
 
 export function uninstall({ userDataDir } = {}) {
   const removed = [];
+  if (WINDOWS) removed.push(...windows.unregisterAll());
   const dirs = [...Object.values(nativeHostDirs())];
   if (userDataDir) dirs.push(path.join(path.resolve(userDataDir), 'NativeMessagingHosts'));
   for (const dir of dirs) {
@@ -144,7 +153,9 @@ export function uninstall({ userDataDir } = {}) {
 }
 
 export async function status() {
-  const registered = Object.entries(nativeHostDirs())
+  const registered = WINDOWS
+    ? windows.registeredBrowsers()
+    : Object.entries(nativeHostDirs())
     .filter(([, dir]) => fs.existsSync(path.join(dir, `${HOST_NAME}.json`)))
     .map(([browser]) => browser);
   const connected = await new Promise((resolve) => {

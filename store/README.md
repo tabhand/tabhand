@@ -17,7 +17,7 @@ I built it because I wanted my agents to get things done in the browser without 
 
 You can watch along if you like. Every agent has its own cursor that moves, clicks and types on the page, and its tabs show its icon. Click the Tabhand button in the toolbar to pause all agents at once.
 
-Tabhand works on macOS, with Google Chrome. To set it up, run this in Terminal:
+Tabhand works on macOS and Windows, in Google Chrome, Edge and Brave (and Dia on macOS). To set it up, run this in a terminal:
 npx tabhand setup
 
 That adds Tabhand to the agents on your computer and connects them to this extension. Everything runs locally: no servers, no analytics.
@@ -58,6 +58,6 @@ Public, all regions, free.
 ## Test instructions (for reviewers)
 
 ```
-Tabhand needs its companion helper. On macOS with Node.js 20+, run: npx tabhand setup
+Tabhand needs its companion helper. On macOS or Windows with Node.js 20+, run: npx tabhand setup
 Then ask an MCP-capable agent such as Claude Code: "Open example.com with the browser tools and tell me the page title."
 ```

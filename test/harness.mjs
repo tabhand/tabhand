@@ -2,8 +2,9 @@
 // never involve a real install or your own Chrome.
 //
 //   TABHAND_TEST_BROWSER="/path/to/Google Chrome for Testing.app" node test/e2e.mjs
+//   On Windows: TABHAND_TEST_BROWSER=C:\path\to\chrome-win64\chrome.exe (see the Windows section below)
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +19,7 @@ delete process.env.CLAUDE_CODE_SESSION_ID;
 
 /** Name of the app in front on macOS. */
 export function frontmostApp() {
+  if (process.platform === 'win32') return windowsFrontmostApp();
   try {
     const asn = execFileSync('lsappinfo', ['front'], { encoding: 'utf8' }).trim();
     const info = execFileSync('lsappinfo', ['info', asn], { encoding: 'utf8' });
@@ -64,6 +66,7 @@ export async function browserDevTools(profile) {
 
 /** Starts a throwaway browser running Tabhand, plus any other unpacked extensions given. */
 export async function launchTestBrowser({ extensions = [], args = [] } = {}) {
+  if (process.platform === 'win32') return launchWindowsTestBrowser({ extensions, args });
   const browserApp =
     process.env.TABHAND_TEST_BROWSER ??
     path.join(os.homedir(), 'Library/Caches/ms-playwright/chromium-1217/chrome-mac-arm64/Google Chrome for Testing.app');
@@ -102,6 +105,98 @@ export async function launchTestBrowser({ extensions = [], args = [] } = {}) {
       fs.rmSync(profile, { recursive: true, force: true });
       fs.rmSync(process.env.TABHAND_DATA_DIR, { recursive: true, force: true });
       fs.rmSync(process.env.TABHAND_HOME, { recursive: true, force: true });
+    },
+  };
+}
+
+// ------------------------------------------------------------------ Windows only
+
+/**
+ * Which program's window is in front: one PowerShell reports the product name ("Google Chrome
+ * for Testing", say) ten times a second, and this hands back the latest.
+ */
+let windowsFront = null;
+function windowsFrontmostApp() {
+  if (!windowsFront) {
+    windowsFront = { latest: '?' };
+    const script = [
+      'Add-Type -Namespace Tabhand -Name Front -MemberDefinition \'[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);\'',
+      // No window in front (as in an SSH session) reads as "?", like an unknown app on macOS.
+      'while ($true) { $id = 0; [void][Tabhand.Front]::GetWindowThreadProcessId([Tabhand.Front]::GetForegroundWindow(), [ref]$id); $p = if ($id) { Get-Process -Id $id -ErrorAction SilentlyContinue }; [Console]::Out.WriteLine($(if ($p.Product) { $p.Product } elseif ($p) { $p.ProcessName } else { "?" })); [Console]::Out.Flush(); Start-Sleep -Milliseconds 100 }',
+    ].join('; ');
+    const sampler = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    sampler.stdout.setEncoding('utf8');
+    sampler.stdout.on('data', (data) => {
+      const lines = data.split(/\r?\n/).filter(Boolean);
+      if (lines.length) windowsFront.latest = lines.at(-1);
+    });
+    sampler.on('error', () => {});
+    sampler.unref();
+    sampler.stdout.unref?.();
+    process.on('exit', () => sampler.kill());
+  }
+  return windowsFront.latest;
+}
+
+// Start sampling as the harness loads, so tests get real answers from their first look.
+if (process.platform === 'win32') windowsFrontmostApp();
+
+/** The registry key Chrome for Testing finds the bridge by on Windows: Chromium's. */
+const CFT_KEY = 'HKCU\\Software\\Chromium\\NativeMessagingHosts\\dev.tabhand.bridge';
+function registryValue(key) {
+  try {
+    return /REG_SZ\s+(.+)$/m.exec(execFileSync('reg.exe', ['query', key, '/ve'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * launchTestBrowser on Windows. Chrome for Testing runs emulated on Windows on Arm, so it gets a
+ * minute to connect; TABHAND_TEST_BROWSER_ARGS adds switches (--disable-gpu, say). Its registry key
+ * is Chromium's, so whatever was there is put back afterwards.
+ */
+async function launchWindowsTestBrowser({ extensions = [], args = [] } = {}) {
+  const browserApp = process.env.TABHAND_TEST_BROWSER;
+  if (!browserApp) throw new Error("Set TABHAND_TEST_BROWSER to Chrome for Testing's chrome.exe");
+  process.env.TABHAND_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tabhand-test-data-'));
+  process.env.TABHAND_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'tabhand-test-home-'));
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'tabhand-test-profile-'));
+  const before = registryValue(CFT_KEY);
+  await install({ userDataDir: profile });
+  await install({ browser: 'chrome-for-testing' });
+  const browser = spawn(
+    browserApp,
+    [
+      `--user-data-dir=${profile}`,
+      `--load-extension=${[extensionDir, ...extensions].join(',')}`,
+      `--disable-extensions-except=${[extensionDir, ...extensions].join(',')}`,
+      // Wide enough for desktop layouts: Wikipedia folds its search box away in narrow windows.
+      '--window-size=1400,1000',
+      '--no-first-run', '--no-default-browser-check', ...args,
+      ...(process.env.TABHAND_TEST_BROWSER_ARGS?.split(/\s+/).filter(Boolean) ?? []),
+      'about:blank',
+    ],
+    { detached: true, stdio: 'ignore' },
+  );
+  browser.on('error', () => {});
+  browser.unref();
+  for (let i = 0; i < 120 && !(await status()).connected; i++) await sleep(500);
+  const connected = (await status()).connected;
+
+  return {
+    connected,
+    profile,
+    async close() {
+      // The browser and everything it started: its helpers, and the bridge through cmd.exe.
+      try {
+        execFileSync('taskkill.exe', ['/F', '/T', '/PID', String(browser.pid)], { stdio: 'ignore' });
+      } catch {}
+      await sleep(1000);
+      if (before) execFileSync('reg.exe', ['add', CFT_KEY, '/ve', '/t', 'REG_SZ', '/d', before, '/f'], { stdio: 'ignore' });
+      else execFileSync('reg.exe', ['delete', CFT_KEY, '/f'], { stdio: 'ignore' });
+      // Windows can hold a file a moment after its process ends.
+      for (const dir of [profile, process.env.TABHAND_DATA_DIR, process.env.TABHAND_HOME]) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
     },
   };
 }

@@ -4,6 +4,8 @@
 
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { WINDOWS } from './paths.mjs';
+import * as windows from './windows.mjs';
 
 const HARNESSES = [
   { theme: 'claude', name: 'Claude', pattern: /claude/i },
@@ -34,6 +36,7 @@ const match = (text) => (text ? HARNESSES.find((harness) => harness.pattern.test
 
 /** Executable names of our nearest parent processes. Empty where `ps` isn't available. */
 function launcherNames(depth = 2) {
+  if (WINDOWS) return windows.launcherNames(depth, INTERPRETERS);
   const names = [];
   let pid = process.ppid;
   for (let level = 0; level < depth && pid > 1; level++) {

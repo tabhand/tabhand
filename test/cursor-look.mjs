@@ -9,11 +9,15 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { browserDevTools, launchTestBrowser, sleep } from './harness.mjs';
+
+/** Where the screenshots go: /tmp, or the temp folder on Windows. */
+const shots = process.platform === 'win32' ? os.tmpdir() : '/tmp';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXTENSION_ID = 'hbfnkakpdogiidhdmhhcifeegekkoaep';
@@ -109,17 +113,17 @@ try {
   const alphaTab = Number((await alpha.call('browser_list_tabs')).text.match(/^Tab (\d+)/)?.[1]);
   await alpha.call('browser_click', { tabId: alphaTab, text: 'Quarterly report' });
   await sleep(800);
-  await shoot(await attach((await pageTarget('alpha')).targetId), '/tmp/tabhand-cursor-look-machine.png');
+  await shoot(await attach((await pageTarget('alpha')).targetId), path.join(shots, 'tabhand-cursor-look-machine.png'));
 
   // The panel's choice for this profile, made the way the user would.
   const panel = await attach((await cdp.send('Target.createTarget', { url: `chrome-extension://${EXTENSION_ID}/panel.html`, background: true })).targetId);
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 300, height: 560, deviceScaleFactor: 2, mobile: false }, panel);
   await until(async () => ({ ok: await evaluate(panel, `document.body.dataset.state === 'working'`).catch(() => false) }));
   // The gear opens the cursor view; "Custom", a name, a color and an icon.
-  await shoot(panel, '/tmp/tabhand-cursor-look-panel-main.png');
+  await shoot(panel, path.join(shots, 'tabhand-cursor-look-panel-main.png'));
   await evaluate(panel, `document.getElementById('settings').click(); true`);
   await sleep(200);
-  await shoot(panel, '/tmp/tabhand-cursor-look-panel-own.png');
+  await shoot(panel, path.join(shots, 'tabhand-cursor-look-panel-own.png'));
   await evaluate(panel, `(() => {
     document.querySelector('.seg [data-mode="custom"]').click();
     const name = document.getElementById('look-name');
@@ -131,7 +135,7 @@ try {
   })()`);
   await sleep(300);
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 300, height: 600, deviceScaleFactor: 2, mobile: false }, panel);
-  await shoot(panel, '/tmp/tabhand-cursor-look-panel.png');
+  await shoot(panel, path.join(shots, 'tabhand-cursor-look-panel.png'));
   const tall = await evaluate(panel, `document.documentElement.scrollHeight`);
   check("the cursor view fits Chrome's popup, 600 px tall at most", tall <= 600, `${tall} px`);
   const preview = await evaluate(panel, `document.querySelector('#samples .tag span').textContent + ' ' + document.querySelector('#samples .tag text')?.textContent`);
@@ -150,7 +154,7 @@ try {
   check('the panel still names each agent for what it is', rows.ok, rows.names);
   await alpha.call('browser_click', { tabId: alphaTab, text: 'Revenue, churn and the rest, for the cursor to sit on.' });
   await sleep(800);
-  await shoot(await attach((await pageTarget('alpha')).targetId), '/tmp/tabhand-cursor-look-panel-choice.png');
+  await shoot(await attach((await pageTarget('alpha')).targetId), path.join(shots, 'tabhand-cursor-look-panel-choice.png'));
 
   // A new agent session in this profile wears it too.
   const gamma = await agent('Gamma', 'claude');

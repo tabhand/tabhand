@@ -13,7 +13,7 @@
   <a href="https://www.npmjs.com/package/tabhand"><img src="https://img.shields.io/npm/v/tabhand?color=7c3aed&label=npm" alt="npm version"></a>
   <a href="https://chromewebstore.google.com/detail/tabhand/gcpbhianocgipfljeephofdmbpahkmei"><img src="https://img.shields.io/chrome-web-store/v/gcpbhianocgipfljeephofdmbpahkmei?color=1a73e8&label=chrome%20web%20store" alt="Chrome Web Store"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/macOS-Chrome%20%C2%B7%20Brave%20%C2%B7%20Edge%20%C2%B7%20Dia-4b5563" alt="macOS: Chrome, Brave, Edge and Dia">
+  <img src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows-Chrome%20%C2%B7%20Brave%20%C2%B7%20Edge%20%C2%B7%20Dia-4b5563" alt="macOS and Windows: Chrome, Brave, Edge, and Dia on macOS">
 </p>
 
 https://github.com/user-attachments/assets/d5fe5c5a-c012-471f-bf3b-10fa754c382d
@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/d5fe5c5a-c012-471f-bf3b-10fa754c382d
 npx tabhand setup
 ```
 
-Works with Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Copilot and more: [19 agents](#setup-macos-chrome-brave-edge-or-dia) in all, plus anything else that speaks MCP.
+Works with Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Copilot and more: [19 agents](#setup-macos-and-windows) in all, plus anything else that speaks MCP.
 
 Then add the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/tabhand/gcpbhianocgipfljeephofdmbpahkmei). Setup opens the page for you. It works in Brave, Edge and Dia too.
 
@@ -63,7 +63,7 @@ agent ──stdio──▶ tabhand mcp ──Unix socket──▶ native host �
 
 ![Tab badges for each harness](docs/tab-badges.jpg)
 
-## Setup (macOS: Chrome, Brave, Edge or Dia)
+## Setup (macOS and Windows)
 
 ```sh
 npx tabhand setup
@@ -71,7 +71,7 @@ npx tabhand setup
 
 That's all:
 
-- It installs Tabhand in `~/.tabhand` and connects it to Chrome, and to Brave, Edge and Dia if you have them.
+- It installs Tabhand in `~/.tabhand` and connects it to Chrome, and to Brave, Edge and Dia (macOS) if you have them.
 - It adds Tabhand to every agent it finds, for all your projects. Each new session gets the browser tools, and the server's instructions tell the agent when to reach for them.
 - It asks before changing anything. Where an agent has its own `mcp add` command, setup uses it. Otherwise it edits the agent's settings file in place, keeping comments, and backs up the original to `~/.tabhand/backups`.
 - It opens Tabhand in the Chrome Web Store, so you can add the extension (once), and waits for Chrome to connect.
@@ -87,7 +87,15 @@ Using Brave, Edge or Dia? Add the extension there from the same Chrome Web Store
 
 `tabhand status` checks the install, the Chrome connection and each agent. `tabhand remove` undoes it all. Run `npx tabhand@latest setup` again to update.
 
-Any other MCP client can run `~/.tabhand/bin/tabhand mcp` itself.
+Any other MCP client can run `~/.tabhand/bin/tabhand mcp` itself (on Windows, `%USERPROFILE%\.tabhand\bin\tabhand.cmd mcp`).
+
+### On Windows
+
+- You need Node.js 20 or later, from [nodejs.org](https://nodejs.org) or `winget install OpenJS.NodeJS.LTS`.
+- In PowerShell, if `npx` says running scripts is disabled on this system, run `npx.cmd tabhand setup` instead, or use Command Prompt.
+- Setup registers Tabhand with Chrome and Edge (Edge comes with Windows), and with Brave if you have it, under `HKEY_CURRENT_USER` in the registry. Nothing needs an administrator.
+- Agents reach the bridge over a named pipe, not a network port, and each has to show a token kept in your own AppData, new each time Chrome starts the bridge.
+- Tested on Windows 11 with Chrome, and with Claude Code as the agent.
 
 ### Working on Tabhand
 
@@ -100,6 +108,10 @@ node bin/tabhand.mjs reload   # after changing the extension's code
 From a checkout, setup has you load the extension unpacked (Developer mode, then "Load unpacked") instead of adding it from the Chrome Web Store.
 
 Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`), because macOS doesn't let Chrome's child processes read Documents, Desktop or Downloads. Agents and Chrome both start it through `~/.tabhand/bin/tabhand`. That launcher remembers which Node.js ran setup, since agent apps don't get your shell's PATH. If that Node.js is removed later, it finds another one. If Chrome never connects, the bridge's log at `~/Library/Application Support/tabhand/host.log` says why.
+
+On Windows, Chrome starts the bridge through `~\.tabhand\bin\tabhand-host.cmd`, which the registry points it to, and agents run the Node.js that ran setup with `~\.tabhand\app\tabhand.mjs` directly, since they start programs without a shell. The log is in `%LOCALAPPDATA%\tabhand\host.log`, and anything the bridge printed while failing to start is in `host-errors.log` next to it.
+
+Windows-only code lives in `src/windows.mjs` and `extension/windows.js`. The shared files call into them only behind a Windows check, and keep their macOS code as it is.
 
 ## Tools
 
@@ -125,6 +137,8 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 
 - `npm test` runs all of these except the smoke test.
 - `node test/setup.mjs` runs setup, status and remove in a throwaway home folder holding existing agent configs. It checks that Tabhand gets added, that comments and other settings survive, that a second run changes nothing, and that the launcher serves the MCP server.
+- `node test/setup-windows.mjs` does the same on Windows, with the registry entries under a key of the test's own, and checks that agents' own `mcp add` commands get called through cmd.exe.
+- On Windows the tests that start a browser need `TABHAND_TEST_BROWSER` set to Chrome for Testing's `chrome.exe`.
 - `node test/package.mjs` packs the npm package, installs the tarball, and runs setup from it.
 - `node test/activator.mjs` checks, on macOS, that the helper the bridge starts to hand the front back to your app goes away with the bridge, even when the bridge is killed, and that a new bridge stops helpers an older Tabhand left running and nothing else.
 - `node test/arc.mjs` checks, on macOS, that a bridge Arc starts stays connected but out of agents' way.
@@ -147,7 +161,7 @@ Setup copies a single bundled file (`dist/tabhand.mjs`, built by `npm run build`
 - Confirmation before sending, buying or deleting
 - Logins filled from your password manager without the AI seeing the password
 - Downloads and iframes
-- Windows and Linux
+- Linux
 
 ## License
 

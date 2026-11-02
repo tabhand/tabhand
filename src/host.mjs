@@ -1,6 +1,7 @@
 // Native messaging host. Chrome starts this process when the Tabhand extension connects,
 // and stops it when the extension disconnects. It relays requests from local agent sessions
-// (MCP servers, over a Unix socket) to the extension, and responses back.
+// (MCP servers, over a Unix socket) to the extension, and responses back. On Windows that socket
+// is a named pipe (see paths.mjs), with the same token check.
 //
 // There is no TCP listener: web pages and other machines cannot reach it. The socket lives in a
 // directory only the current user can read, and every client must present a token from that
@@ -11,7 +12,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import { readMessages, writeMessage } from './native-messaging.mjs';
-import { dataDir, logPath, socketPath, tokenPath } from './paths.mjs';
+import { WINDOWS, dataDir, logPath, socketPath, tokenPath } from './paths.mjs';
 import { VERSION } from './version.mjs';
 
 const SESSION_GRACE_MS = Number(process.env.TABHAND_SESSION_GRACE_MS) || 30_000;
@@ -888,7 +889,8 @@ export async function runHost() {
   };
 
   server.listen(socketPath(), () => {
-    fs.chmodSync(socketPath(), 0o600);
+    // A named pipe has no file mode to set.
+    if (!WINDOWS) fs.chmodSync(socketPath(), 0o600);
     log('listening');
     toExtension({ type: 'active' });
   });

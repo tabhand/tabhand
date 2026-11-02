@@ -7,16 +7,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readJson, readTomlTable, tomlString, writeJson, writeTomlTable } from './config-files.mjs';
+import { WINDOWS } from './paths.mjs';
+import * as windows from './windows.mjs';
 
 export const SERVER_NAME = 'tabhand';
 
 const home = (...parts) => path.join(os.homedir(), ...parts);
-const appSupport = (...parts) => home('Library', 'Application Support', ...parts);
+const appSupport = (...parts) => (WINDOWS ? windows.appData(...parts) : home('Library', 'Application Support', ...parts));
 const exists = (file) => fs.existsSync(file);
-const hasApp = (name) => exists(`/Applications/${name}.app`) || exists(home('Applications', `${name}.app`));
+const hasApp = (name) => (WINDOWS ? windows.hasApp(name) : exists(`/Applications/${name}.app`) || exists(home('Applications', `${name}.app`)));
 
 function onPath(command) {
   if (process.env.TABHAND_NO_HARNESS_CLIS) return false;
+  if (WINDOWS) return Boolean(windows.which(command));
   try {
     execFileSync('/bin/sh', ['-c', 'command -v "$1"', 'sh', command], { stdio: 'ignore' });
     return true;
@@ -44,8 +47,8 @@ const opencodeConfig = () => {
   return ['opencode.jsonc', 'opencode.json'].map((name) => path.join(dir, name)).find(exists) ?? path.join(dir, 'opencode.json');
 };
 const vscodeUser = (...parts) =>
-  process.platform === 'darwin' ? appSupport('Code', 'User', ...parts) : home('.config', 'Code', 'User', ...parts);
-const zedSettings = () => path.join(process.env.XDG_CONFIG_HOME || home('.config'), 'zed', 'settings.json');
+  WINDOWS ? windows.appData('Code', 'User', ...parts) : process.platform === 'darwin' ? appSupport('Code', 'User', ...parts) : home('.config', 'Code', 'User', ...parts);
+const zedSettings = () => (WINDOWS ? windows.appData('Zed', 'settings.json') : path.join(process.env.XDG_CONFIG_HOME || home('.config'), 'zed', 'settings.json'));
 
 export const HARNESSES = [
   {
@@ -263,12 +266,13 @@ export const HARNESSES = [
 ];
 
 /** What each harness runs: the launcher, with flags naming the harness for its cursor colors. */
-export const serverFor = (harness, launcher) => ({
+export const serverFor = (harness, launcher) =>
+  WINDOWS ? windows.serverFor(harness) : ({
   command: launcher,
   args: ['mcp', '--label', harness.label, '--theme', harness.theme],
 });
 
-const sameServer = (a, b) => a?.command === b.command && JSON.stringify(a?.args ?? []) === JSON.stringify(b.args);
+const sameServer = (a, b) => (WINDOWS ? windows.sameServer(a, b) : a?.command === b.command && JSON.stringify(a?.args ?? []) === JSON.stringify(b.args));
 
 /** 'set up', 'outdated' (points somewhere else) or 'missing'. */
 export function harnessStatus(harness, launcher) {
@@ -283,6 +287,7 @@ export function harnessStatus(harness, launcher) {
 }
 
 function runCli(harness, args) {
+  if (WINDOWS) return windows.runCli(harness.cli.command, args);
   execFileSync(harness.cli.command, args, { stdio: 'pipe', timeout: 60_000 });
 }
 

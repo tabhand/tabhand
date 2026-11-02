@@ -16,6 +16,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { BridgeClient, OLD_BRIDGE } from '../src/bridge-client.mjs';
 import { readMessages, writeMessage } from '../src/native-messaging.mjs';
+import { socketPathFor } from '../src/paths.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tabhand-profiles-'));
@@ -208,7 +209,7 @@ try {
 
   // An older host standing by can't take relayed work: it must not be waited on.
   b.paused = false;
-  const old = net.connect(path.join(dataDir, 'bridge.sock'));
+  const old = net.connect(socketPathFor(dataDir));
   await new Promise((done) => old.once('connect', done));
   old.write(JSON.stringify({ type: 'standby', token: fs.readFileSync(path.join(dataDir, 'token'), 'utf8'), version: '0.8.0' }) + '\n');
   await sleep(200);
@@ -246,7 +247,7 @@ try {
       }
     });
   });
-  await new Promise((done) => oldBridge.listen(path.join(oldDir, 'bridge.sock'), done));
+  await new Promise((done) => oldBridge.listen(socketPathFor(oldDir), done));
   const chose = new BridgeClient({ sessionId: crypto.randomUUID(), label: 'Nine' });
   chose.profile = 'aaaa1111';
   const answer = await chose.request('open_tab', { url: 'https://example.com/' }).then(() => 'opened', (e) => e.message);

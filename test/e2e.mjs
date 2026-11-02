@@ -83,8 +83,16 @@ try {
 
     const wiki = await a.call('browser_open_tab', { url: 'https://en.wikipedia.org/wiki/Main_Page' });
     const wikiTab = tabIdOf(wiki.text);
-    const wikiSnap = await a.call('browser_snapshot', { tabId: wikiTab });
-    const searchRef = /(?:searchbox|combobox|textbox) "Search Wikipedia"[^\n]*\[ref=(e\d+)\]/.exec(wikiSnap.text)?.[1];
+    let wikiSnap = await a.call('browser_snapshot', { tabId: wikiTab });
+    const searchBox = /(?:searchbox|combobox|textbox) "Search Wikipedia"[^\n]*\[ref=(e\d+)\]/;
+    // In a narrow window Wikipedia folds its search box into a "Search" link that opens it.
+    const searchLink = /link "Search" \[ref=(e\d+)\]/.exec(wikiSnap.text)?.[1];
+    if (!searchBox.test(wikiSnap.text) && searchLink) {
+      await a.call('browser_click', { tabId: wikiTab, ref: searchLink });
+      wikiSnap = await a.call('browser_snapshot', { tabId: wikiTab });
+    }
+    // The link can also lead to the Special:Search page, whose search box has no name.
+    const searchRef = (searchBox.exec(wikiSnap.text) ?? /searchbox[^\n]*\[ref=(e\d+)\]/.exec(wikiSnap.text))?.[1];
     const typed = await a.call('browser_type', { tabId: wikiTab, ref: searchRef, text: 'Playwright (software)', submit: true });
     check('A types into a field and submits', /Playwright/.test(typed.text), typed.text.split('\n')[0]);
     const scrolled = await a.call('browser_scroll', { tabId: wikiTab, direction: 'down', amount: 800 });
