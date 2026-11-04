@@ -22,6 +22,7 @@ npx tabhand setup
 
 That adds Tabhand to the agents on your computer and connects them to this extension. Everything runs locally: no servers, no analytics.
 
+Website and docs: https://tabhand.dev
 Tabhand is open source (MIT): https://github.com/tabhand/tabhand
 ```
 

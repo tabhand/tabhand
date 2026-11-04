@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <a href="https://tabhand.dev"><strong>tabhand.dev</strong></a> · <a href="https://tabhand.dev/docs">Docs</a> · <a href="https://chromewebstore.google.com/detail/tabhand/gcpbhianocgipfljeephofdmbpahkmei">Chrome Web Store</a>
+</p>
+
+<p align="center">
   <a href="https://www.npmjs.com/package/tabhand"><img src="https://img.shields.io/npm/v/tabhand?color=7c3aed&label=npm" alt="npm version"></a>
   <a href="https://chromewebstore.google.com/detail/tabhand/gcpbhianocgipfljeephofdmbpahkmei"><img src="https://img.shields.io/chrome-web-store/v/gcpbhianocgipfljeephofdmbpahkmei?color=1a73e8&label=chrome%20web%20store" alt="Chrome Web Store"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>

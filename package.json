@@ -24,7 +24,7 @@
   "bugs": {
     "url": "https://github.com/tabhand/tabhand/issues"
   },
-  "homepage": "https://github.com/tabhand/tabhand#readme",
+  "homepage": "https://tabhand.dev",
   "bin": {
     "tabhand": "dist/tabhand.mjs"
   },
