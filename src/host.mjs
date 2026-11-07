@@ -271,6 +271,14 @@ function standBy(info, onLine, onConnect) {
 }
 
 export async function runHost() {
+  // Crashes go in the log too: on Windows the wrapper throws stderr away. Either way the bridge
+  // still stops, as Node's default does, and the extension starts a new one.
+  const crash = (error) => {
+    log(`crashed: ${error?.stack ?? error}`);
+    process.exit(1);
+  };
+  process.on('uncaughtException', crash);
+  process.on('unhandledRejection', crash);
   fs.mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
   fs.chmodSync(dataDir(), 0o700);
   try {

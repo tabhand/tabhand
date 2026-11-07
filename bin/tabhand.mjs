@@ -14,8 +14,10 @@ const HELP = `Tabhand: let your AI agents use your own Chrome, in background tab
                       --harness claude,codex   only these agents (default: every one found)
                       --yes                    don't ask before changing agent settings
                       --no-wait                don't wait for Chrome to connect
-                      --browser brave          only this browser (default: Chrome, and Brave,
-                                               Edge and Dia when they're on this machine)
+                      --dry-run                show the whole setup and change nothing
+                      --browser brave          only this browser (default: Chrome, Brave, Edge
+                                               and on macOS Dia, installed or not, so the
+                                               extension works in one you install later)
   tabhand status    Check the install, the Chrome connection and each agent
   tabhand remove    Take Tabhand out of your agents and off this machine
   tabhand cursor    Show or set the name and color every agent's cursor uses on this machine
@@ -38,7 +40,7 @@ try {
     case 'setup': {
       const { setup } = await import('../src/setup.mjs');
       const harnesses = flag('--harness')?.split(',').map((key) => key.trim()).filter(Boolean);
-      await setup({ harnesses, yes: has('--yes', '-y'), wait: !has('--no-wait'), browser: flag('--browser') });
+      await setup({ harnesses, yes: has('--yes', '-y'), wait: !has('--no-wait'), browser: flag('--browser'), dryRun: has('--dry-run') });
       break;
     }
     case 'status':

@@ -56,13 +56,14 @@ export function writeLaunchers() {
     ].join('\r\n');
   fs.writeFileSync(launcherPath(), start('%*'));
   fs.mkdirSync(dataDir(), { recursive: true });
-  // cmd.exe keeps a file it sends output to open in a way that stops the bridge writing its own
-  // lines there, so startup errors go to a file of their own.
+  // The bridge's errors go nowhere here: it logs them itself, a line at a time. cmd.exe keeps a file
+  // it sends output to open in a way no other process can write to, which stopped the bridge writing
+  // its own lines there, and stopped a second browser's bridge from starting at all while the first
+  // one ran (found with Chrome and Brave in 0.13.0).
   const log = cmdPath(logPath());
-  const errors = cmdPath(path.join(dataDir(), 'host-errors.log'));
   fs.writeFileSync(
     hostLauncherPath(),
-    start(`host %* 2>>"${errors}"`).replace('setlocal\r\n', `setlocal\r\n>>"${log}" echo %DATE% %TIME% [wrapper] started by the browser\r\n`),
+    start('host %* 2>nul').replace('setlocal\r\n', `setlocal\r\n>>"${log}" echo %DATE% %TIME% [wrapper] started by the browser\r\n`),
   );
 }
 

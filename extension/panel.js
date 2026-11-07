@@ -23,6 +23,23 @@ let saidSomething = 0;
 
 const ask = (message) => chrome.runtime.sendMessage(message);
 
+/**
+ * Where the panel is open, for what it says when the helper is missing: the computer, and the
+ * browser when it says which it is. Brave and Edge do; any other gets "your browser".
+ */
+const where = { os: 'mac', browser: null };
+Promise.all([
+  chrome.runtime.getPlatformInfo().then(({ os }) => (where.os = os)),
+  Promise.resolve(navigator.brave?.isBrave?.()).then((brave) => {
+    if (brave) where.browser = 'Brave';
+    else if (navigator.userAgentData?.brands?.some(({ brand }) => brand === 'Microsoft Edge')) where.browser = 'Edge';
+  }),
+])
+  .catch(() => {})
+  .then(() => render());
+const computer = () => (where.os === 'mac' ? 'your Mac' : 'your computer');
+const terminal = () => (where.os === 'win' ? 'PowerShell' : 'Terminal');
+
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const host = (url) => {
   try {
@@ -116,16 +133,21 @@ function render() {
     show('lede', null);
     show('note', 'No agent can open or use a tab until you resume.');
   } else if (kind === 'setup') {
-    headline('One more', 'step.');
-    show('lede', 'Agents reach Chrome through a small helper on your Mac. Run this once in Terminal:');
-    if (Date.now() > saidSomething) show('note', 'It finds your agents, adds Tabhand to them and backs up their settings first.');
+    // Named, it's most likely a browser installed after Tabhand was set up with an older version.
+    const browser = where.browser;
+    if (browser) headline('Not set up in', `${browser} yet.`);
+    else headline('One more', 'step.');
+    show('lede', `Agents reach ${browser ?? 'your browser'} through a small helper on ${computer()}. Run this once in ${terminal()}:`);
+    if (Date.now() > saidSomething) {
+      show('note', browser ? `Set Tabhand up before you had ${browser}? Run it again to add ${browser}.` : 'It finds your agents, adds Tabhand to them and backs up their settings first.');
+    }
   } else if (kind === 'standby') {
     headline('Standing', 'by.');
     show('lede', 'Agents are using Tabhand in another Chrome profile. Name this one, and you can ask an agent to use it.');
     show('note', null);
   } else {
     headline('One', 'moment.');
-    show('lede', 'Tabhand lost touch with its helper on your Mac and tries again every 30 seconds. If it doesn’t come back, run this in Terminal:');
+    show('lede', `Tabhand lost touch with its helper on ${computer()} and tries again every 30 seconds. If it doesn’t come back, run this in ${terminal()}:`);
     if (Date.now() > saidSomething) show('note', null);
   }
 
@@ -337,7 +359,7 @@ $('toggle').addEventListener('click', async () => {
 
 $('command').addEventListener('click', async () => {
   await navigator.clipboard.writeText(SETUP_COMMAND).catch(() => {});
-  show('note', 'Copied. Paste it in Terminal, then come back here.');
+  show('note', `Copied. Paste it in ${terminal()}, then come back here.`);
   saidSomething = Date.now() + 4000;
 });
 

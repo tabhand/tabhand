@@ -72,6 +72,15 @@ async function restore(kept) {
  * the toolbar panel. Agents use the name to tell profiles apart.
  */
 const profile = { id: '', name: '' };
+/** Where people run setup, for the toolbar tooltip: Terminal on a Mac, PowerShell on Windows. */
+let terminal = 'Terminal';
+chrome.runtime
+  .getPlatformInfo()
+  .then(({ os }) => {
+    terminal = os === 'win' ? 'PowerShell' : 'Terminal';
+    updateBadge();
+  })
+  .catch(() => {});
 const profileReady = chrome.storage.local.get(['profileId', 'profileName']).then(async (stored) => {
   profile.id = stored.profileId ?? crypto.randomUUID().slice(0, 8);
   profile.name = stored.profileName ?? '';
@@ -221,7 +230,7 @@ function updateBadge() {
   const named = profile.name ? ` in “${profile.name}”` : '';
   let title = `Tabhand is on${named}.`;
   if (paused) title = `Tabhand is paused${named}.`;
-  else if (missing) title = 'Tabhand needs one more step: run npx tabhand setup in Terminal.';
+  else if (missing) title = `Tabhand needs one more step: run npx tabhand setup in ${terminal}.`;
   // Several profiles have Tabhand: a name tells agents which is which.
   else if (!profile.name && helper === 'standby') title += ' Name this profile so agents can tell it apart.';
   chrome.action.setTitle({ title });
@@ -1054,7 +1063,9 @@ async function ownedTab(sessionId, tabId, { debug = true } = {}) {
   await rememberUserTab(tab.windowId);
   lastUsed.set(tabId, Date.now());
   await attach(tabId);
-  if (!cursorPresent(tabId)) await presentCursor(tabId);
+  // Only looks, so never worth a long wait: a page whose server hasn't answered holds it up until
+  // it does (GitHub issue #1).
+  if (!cursorPresent(tabId)) await Promise.race([presentCursor(tabId).catch(() => {}), sleep(2_000)]);
   return tabId;
 }
 
@@ -1150,14 +1161,15 @@ async function waitForPage(tabId, before, timeoutMs) {
   if (ready && dropped()) {
     // Knocked off mid-load (see pastForeignFrames), so the load events were missed.
     await documentReady(tabId, timeoutMs);
-    return;
+    return true;
   }
   if (!ready) {
     const state = loadState(tabId);
     noteIssue({ kind: 'load-timeout', tabId, before, ...state, attached: attached.has(tabId) });
-    return;
+    return false;
   }
   await waitUntil(() => dropped() || loadState(tabId).stopped >= loadState(tabId).started, LOAD_GRACE_MS);
+  return true;
 }
 
 /** Waits until the debugger is back on the tab and its page has parsed. */
@@ -1173,11 +1185,37 @@ async function documentReady(tabId, timeoutMs) {
   }
 }
 
-async function navigate(tabId, url) {
+/**
+ * How long opening, navigating and reloading wait for a page, at most. Agent apps give up on a tool
+ * call after a while (often 60 s) and then never learn the tab's id (GitHub issue #1), so a slow
+ * page is handed back still loading; a snapshot reads what has arrived.
+ */
+const PAGE_WAIT_MS = 15_000;
+/** How long a snapshot waits for a page that hasn't arrived yet. */
+const SNAPSHOT_WAIT_MS = 10_000;
+
+/** Loads a URL and waits for it, up to timeoutMs. Says { loading: true } if it isn't there yet. */
+async function navigate(tabId, url, timeoutMs = PAGE_WAIT_MS) {
+  const deadline = Date.now() + timeoutMs;
   const before = loadState(tabId).started;
-  const result = await send(tabId, 'Page.navigate', { url });
+  // Chrome answers Page.navigate only once the server does, which a slow sign-in can take minutes.
+  const navigating = send(tabId, 'Page.navigate', { url });
+  const result = await Promise.race([navigating, sleep(timeoutMs).then(() => null)]);
+  if (!result) {
+    navigating.catch(() => {});
+    noteIssue({ kind: 'load-timeout', tabId, url, waiting: 'server' });
+    return { loading: true };
+  }
   if (result.errorText) throw new Error(`Could not open ${url}: ${result.errorText}`);
-  if (result.loaderId) await waitForPage(tabId, before, 20_000);
+  if (!result.loaderId) return { loading: false };
+  return { loading: !(await waitForPage(tabId, before, Math.max(1_000, deadline - Date.now()))) };
+}
+
+/** Reloads the page, skipping the cache if asked, and waits for it like navigate does. */
+async function reload(tabId, ignoreCache) {
+  const before = loadState(tabId).started;
+  await send(tabId, 'Page.reload', { ignoreCache: Boolean(ignoreCache) });
+  return { loading: !(await waitForPage(tabId, before, PAGE_WAIT_MS)) };
 }
 
 /** Call before an input event, then settle() after it: waits for any navigation it started. */
@@ -1791,9 +1829,9 @@ const PAGE_TIMING = `(() => {
   };
 })()`;
 
-async function takeSnapshot(tabId) {
+async function takeSnapshot(tabId, narrow = {}) {
   const { nodes } = await send(tabId, 'Accessibility.getFullAXTree');
-  return renderSnapshot(nodes, await pointerElements(tabId));
+  return renderSnapshot(nodes, await pointerElements(tabId), narrow);
 }
 
 const handlers = {
@@ -1822,22 +1860,41 @@ const handlers = {
       await save();
     });
     await timed('attach', () => attach(tab.id));
-    if (target) await timed('load', () => navigate(tab.id, target));
-    if (!cursorPresent(tab.id)) await timed('cursor', () => presentCursor(tab.id));
+    const { loading = false } = target ? await timed('load', () => navigate(tab.id, target)) : {};
+    // A page still loading would hold the cursor up until it arrives, which can be minutes.
+    if (!cursorPresent(tab.id)) {
+      if (loading) presentCursor(tab.id).catch(() => {});
+      else await timed('cursor', () => presentCursor(tab.id));
+    }
     const total = Object.values(timings).reduce((sum, ms) => sum + ms, 0);
     if (total > 5_000) noteIssue({ kind: 'slow-open', tabId: tab.id, timings });
-    return describe(tab.id);
+    return { ...(await describe(tab.id)), ...(loading ? { loading, requested: target } : {}) };
   },
 
   async navigate(sessionId, _label, { tabId, url }) {
     await ownedTab(sessionId, tabId);
-    await navigate(tabId, normalizeUrl(url));
-    return describe(tabId);
+    const target = normalizeUrl(url);
+    const { loading } = await navigate(tabId, target);
+    return { ...(await describe(tabId)), ...(loading ? { loading, requested: target } : {}) };
   },
 
-  async snapshot(sessionId, _label, { tabId }) {
+  async reload(sessionId, _label, { tabId, ignoreCache }) {
     await ownedTab(sessionId, tabId);
-    return { ...(await describe(tabId)), snapshot: await takeSnapshot(tabId) };
+    const { loading } = await reload(tabId, ignoreCache);
+    return { ...(await describe(tabId)), ...(loading ? { loading } : {}) };
+  },
+
+  async snapshot(sessionId, _label, { tabId, find, interactiveOnly }) {
+    await ownedTab(sessionId, tabId);
+    const narrow = { find: typeof find === 'string' && find.trim() ? find.trim() : undefined, interactiveOnly: Boolean(interactiveOnly) };
+    // Chrome holds the outline of a page whose server hasn't answered until it does.
+    const reading = takeSnapshot(tabId, narrow);
+    const outline = await Promise.race([reading, sleep(SNAPSHOT_WAIT_MS).then(() => null)]);
+    if (outline === null) {
+      reading.catch(() => {});
+      return { ...(await describe(tabId)), snapshot: "(The page is still loading and has nothing to read yet. Take another snapshot in a few seconds.)", narrowed: true, loading: true };
+    }
+    return { ...(await describe(tabId)), snapshot: outline, narrowed: Boolean(narrow.find || narrow.interactiveOnly) };
   },
 
   async click(sessionId, _label, { tabId, ref, text, debugCursor }) {

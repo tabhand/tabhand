@@ -141,6 +141,17 @@ export function uninstall({ userDataDir } = {}) {
     if (fs.existsSync(file)) {
       fs.unlinkSync(file);
       removed.push(file);
+      // Setup registers with browsers that aren't installed, which makes their folders. Take
+      // those back out, up to three levels (NativeMessagingHosts, User Data, the vendor's), but
+      // only folders left empty: an installed browser's folder always has its profile in it.
+      let folder = dir;
+      for (let level = 0; level < 3; level++, folder = path.dirname(folder)) {
+        try {
+          fs.rmdirSync(folder);
+        } catch {
+          break;
+        }
+      }
     }
   }
   for (const target of [installDir(), dataDir(), ...oldHostFiles()]) {

@@ -84,9 +84,8 @@ write(files.codex, 'model = "gpt-6"\n\n[mcp_servers.other]\ncommand = "other-ser
 write(files.cursor, JSON.stringify({ mcpServers: { other: { command: 'other-server' } } }, null, 2));
 write(files.gemini, JSON.stringify({ theme: 'GitHub' }, null, 2));
 write(files.vscode, '{\n  // mine\n  "servers": {}\n}\n');
-// Edge comes with Windows; Brave is installed for this user only.
+// Edge comes with Windows; Brave isn't installed yet.
 write(at('Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'), '');
-write(at('AppData', 'Local', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), '');
 
 try {
   const said = tabhand('setup', '--yes', '--no-wait', '--harness', 'claude,codex,cursor,gemini,vscode');
@@ -113,7 +112,7 @@ try {
   check('registers it with Chrome in the registry', regValue(key('Google\\Chrome')) === manifestFile, regValue(key('Google\\Chrome')) ?? 'no value');
   const registeredLine = said.split('\n').find((line) => line.includes('registered with')) ?? '';
   check(
-    'and with the other browsers installed here: Edge, and Brave',
+    "and with Edge, and with Brave though it isn't installed, so adding the extension to it later just works",
     regValue(key('Microsoft\\Edge')) === manifestFile && regValue(key('BraveSoftware\\Brave-Browser')) === manifestFile && /registered with Chrome, Brave and Edge/.test(registeredLine),
     registeredLine.trim(),
   );
@@ -124,7 +123,9 @@ try {
   check(
     "the browser's launcher runs the bridge, logging to AppData through %LOCALAPPDATA% and printing nothing",
     host.startsWith('@echo off\r\n') &&
-      host.includes('"%USERPROFILE%\\.tabhand\\app\\tabhand.mjs" host %* 2>>"%LOCALAPPDATA%\\tabhand\\host-errors.log"') &&
+      host.includes('"%USERPROFILE%\\.tabhand\\app\\tabhand.mjs" host %* 2>nul') &&
+      // A file it sent stderr to would stay locked, and a second browser's bridge couldn't start.
+      !host.includes('2>>') &&
       host.includes('>>"%LOCALAPPDATA%\\tabhand\\host.log" echo ') &&
       !/^echo /m.test(host),
   );

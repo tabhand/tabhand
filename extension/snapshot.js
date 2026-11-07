@@ -60,8 +60,55 @@ function textInside(node, byId, max = 150) {
 const focusable = (node) => (node.properties ?? []).some((p) => p.name === 'focusable' && p.value?.value === true);
 
 /** clickable, draggable: DOM backend node ids of plain elements the page made clickable, or draggable. */
-export function renderSnapshot(nodes, { clickable = new Set(), draggable = new Set() } = {}) {
+/**
+ * Narrows a rendered outline (GitHub issue #2). find keeps the lines that contain the text, widened
+ * to the row, list item or card around them (so a row comes with its other cells and buttons), with
+ * what holds it (its ancestors) and what's inside it, up to 40 lines.
+ * interactiveOnly keeps what can be acted on (lines with a ref) and the headings, as a flat list.
+ */
+export function narrowSnapshot(text, { find, interactiveOnly } = {}) {
+  const lines = text.split('\n');
+  const depthOf = (line) => line.length - line.trimStart().length;
+  const needle = find?.toLowerCase();
+  const hasRef = (line) => /\[ref=e\d+\]/.test(line);
+  if (interactiveOnly) {
+    const kept = lines.filter((line) => (hasRef(line) || /^\s*- heading /.test(line)) && (!needle || line.toLowerCase().includes(needle)));
+    return kept.length ? kept.map((line) => line.trimStart()).join('\n') : needle ? `Nothing you can act on matches "${find}".` : 'Nothing on the page can be acted on.';
+  }
+  const RECORDS = new Set(['row', 'listitem', 'article', 'option', 'treeitem']);
+  const roleOf = (line) => /^\s*- ([\w-]+)/.exec(line)?.[1];
+  const ancestors = (i) => {
+    const found = [];
+    let depth = depthOf(lines[i]);
+    for (let j = i - 1; j >= 0 && depth > 0; j--) {
+      if (depthOf(lines[j]) < depth) {
+        found.push(j);
+        depth = depthOf(lines[j]);
+      }
+    }
+    return found;
+  };
+  const keep = new Set();
+  lines.forEach((line, i) => {
+    if (!line.toLowerCase().includes(needle)) return;
+    const above = ancestors(i);
+    // The nearest row, list item or card around the match, a few levels up at most.
+    const record = above.slice(0, 4).find((j) => RECORDS.has(roleOf(lines[j])));
+    const base = record ?? i;
+    keep.add(i);
+    keep.add(base);
+    for (const j of ancestors(base)) keep.add(j);
+    const own = depthOf(lines[base]);
+    for (let j = base + 1, n = 0; j < lines.length && depthOf(lines[j]) > own && n < 40; j++, n++) keep.add(j);
+  });
+  return keep.size ? lines.filter((_, i) => keep.has(i)).join('\n') : `Nothing on the page matches "${find}".`;
+}
+
+export function renderSnapshot(nodes, { clickable = new Set(), draggable = new Set() } = {}, narrow = {}) {
   if (!nodes?.length) return '(empty page)';
+  // Narrowed, the whole page is read first (within reason), so a match far down still turns up.
+  const narrowing = Boolean(narrow.find || narrow.interactiveOnly);
+  const limit = narrowing ? 2_000_000 : MAX_CHARS;
   const byId = new Map(nodes.map((node) => [node.nodeId, node]));
   // Whether anything inside a node has a ref of its own: then that's what to click, and a card
   // around it needn't be one more clickable.
@@ -84,7 +131,7 @@ export function renderSnapshot(nodes, { clickable = new Set(), draggable = new S
 
   const push = (line) => {
     if (truncated) return;
-    if (size + line.length > MAX_CHARS) {
+    if (size + line.length > limit) {
       truncated = true;
       return;
     }
@@ -138,6 +185,12 @@ export function renderSnapshot(nodes, { clickable = new Set(), draggable = new S
 
   const root = nodes.find((node) => !node.parentId) ?? nodes[0];
   walk(root, 0, '');
-  if (truncated) lines.push('… (snapshot truncated: the page is very long. Scroll or navigate to narrow it down.)');
+  const more = 'Pass find: "some text" to read just that part, or interactiveOnly: true for only what you can act on.';
+  if (narrowing) {
+    const narrowed = narrowSnapshot(lines.join('\n'), narrow);
+    if (narrowed.length <= MAX_CHARS) return narrowed;
+    return `${narrowed.slice(0, narrowed.lastIndexOf('\n', MAX_CHARS))}\n… (still very long. Narrow it with more specific find text.)`;
+  }
+  if (truncated) lines.push(`… (snapshot truncated: the page is very long. ${more})`);
   return lines.join('\n') || '(no readable content)';
 }

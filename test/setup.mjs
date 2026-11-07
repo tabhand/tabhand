@@ -92,6 +92,11 @@ try {
   );
   check('not with a browser that only has a folder', canaryHere || (!fs.existsSync(hostFile('Google', 'Chrome Canary')) && !registeredLine.includes('Canary')));
   check('nor with Arc', !fs.existsSync(hostFile('Arc', 'User Data')) && !registeredLine.includes('Arc'));
+  check(
+    "and with Edge and Dia though they aren't installed, so adding the extension to one later just works",
+    same(json(hostFile('Microsoft Edge')), host) && same(json(hostFile('Dia', 'User Data')), host) && /Edge and Dia/.test(registeredLine),
+    registeredLine,
+  );
   check('status lists them', /Bridge registered with Chrome, .*Brave/.test(tabhand('status')));
 
   const claude = json(files.claude);
@@ -155,7 +160,12 @@ try {
   );
   check(
     'remove deletes the install and the bridge registrations',
-    !fs.existsSync(at('.tabhand')) && !fs.existsSync(hostFile('Google', 'Chrome')) && !fs.existsSync(hostFile('BraveSoftware', 'Brave-Browser')),
+    !fs.existsSync(at('.tabhand')) &&
+      ['Google/Chrome', 'BraveSoftware/Brave-Browser', 'Microsoft Edge', 'Dia/User Data'].every((dir) => !fs.existsSync(hostFile(...dir.split('/')))),
+  );
+  check(
+    "and the folders it made for browsers that aren't installed, but not another app's",
+    !fs.existsSync(support('Microsoft Edge')) && !fs.existsSync(support('Dia')) && fs.existsSync(support('Google', 'Chrome Canary', 'NativeMessagingHosts')),
   );
 } catch (error) {
   check('test run', false, error.stderr?.toString() || error.message);

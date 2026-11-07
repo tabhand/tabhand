@@ -75,7 +75,7 @@ npx tabhand setup
 
 That's all:
 
-- It installs Tabhand in `~/.tabhand` and connects it to Chrome, and to Brave, Edge and Dia (macOS) if you have them.
+- It installs Tabhand in `~/.tabhand` and connects it to Chrome, Brave, Edge and Dia (macOS), whether you have them yet or not, so the extension works in a browser you install later too.
 - It adds Tabhand to every agent it finds, for all your projects. Each new session gets the browser tools, and the server's instructions tell the agent when to reach for them.
 - It asks before changing anything. Where an agent has its own `mcp add` command, setup uses it. Otherwise it edits the agent's settings file in place, keeping comments, and backs up the original to `~/.tabhand/backups`.
 - It opens Tabhand in the Chrome Web Store, so you can add the extension (once), and waits for Chrome to connect.
@@ -97,7 +97,7 @@ Any other MCP client can run `~/.tabhand/bin/tabhand mcp` itself (on Windows, `%
 
 - You need Node.js 20 or later, from [nodejs.org](https://nodejs.org) or `winget install OpenJS.NodeJS.LTS`.
 - In PowerShell, if `npx` says running scripts is disabled on this system, run `npx.cmd tabhand setup` instead, or use Command Prompt.
-- Setup registers Tabhand with Chrome and Edge (Edge comes with Windows), and with Brave if you have it, under `HKEY_CURRENT_USER` in the registry. Nothing needs an administrator.
+- Setup registers Tabhand with Chrome, Edge and Brave, under `HKEY_CURRENT_USER` in the registry, including a browser you haven't installed yet. Nothing needs an administrator.
 - Agents reach the bridge over a named pipe, not a network port, and each has to show a token kept in your own AppData, new each time Chrome starts the bridge.
 - Tested on Windows 11 with Chrome, and with Claude Code as the agent.
 
@@ -123,7 +123,8 @@ Windows-only code lives in `src/windows.mjs` and `extension/windows.js`. The sha
 |---|---|
 | `browser_open_tab` | Open a background tab in the agent's tab group, optionally loading a URL, in the Chrome profile it asks for |
 | `browser_navigate` | Load a URL in one of the session's tabs |
-| `browser_snapshot` | Read the page as an accessibility outline; actionable elements, including ones a page made clickable or draggable out of plain elements, get refs like `e123` |
+| `browser_reload` | Reload a tab for fresh data, optionally skipping the cache |
+| `browser_snapshot` | Read the page as an accessibility outline; actionable elements, including ones a page made clickable or draggable out of plain elements, get refs like `e123`. On long pages, `find` reads just the part with some text and `interactiveOnly` just what can be acted on |
 | `browser_click` | Click an element by ref, or by the text it shows |
 | `browser_hover` | Move the pointer over an element (by ref or text) to reveal controls that only show on hover, and get a fresh snapshot with refs for them |
 | `browser_drag` | Drag one element onto another, by ref or text: reorder lists, move cards between columns. Works with the browser's own drag and drop and with pages that follow the mouse |

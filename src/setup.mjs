@@ -13,6 +13,7 @@ import { fromCheckout, install, status, uninstall } from './install.mjs';
 import { STORE_EXTENSION_ID, STORE_URL, WINDOWS, installDir, installedExtensionDir, launcherPath, nativeHostDirs } from './paths.mjs';
 import * as windows from './windows.mjs';
 import { VERSION } from './version.mjs';
+import { Interrupted, Region, Terminal, now, pick, waitFor } from './livery.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const tilde = (file) => file.replace(os.homedir(), '~');
@@ -139,12 +140,23 @@ const hasApp = (browser) =>
 const NOT_BY_DEFAULT = new Set(['chrome', 'chrome-for-testing', 'arc']);
 
 /**
- * The other Chromium browsers on this Mac, besides Chrome. Setup registers the bridge with these
- * too, so the extension from the Chrome Web Store works in whichever of them the user adds it to.
- * Their folders are no guide: other apps' helpers (password managers, agents) create one for every
- * Chromium browser, installed or not.
+ * The browsers Tabhand supports besides Chrome. Setup registers the bridge with each of them whether
+ * or not it's installed, the way it always has with Chrome. Registering is one small file (a
+ * registry key on Windows) that does nothing until the extension is added, so a browser installed
+ * after setup works as soon as the extension is added to it, without running setup again.
  */
-const otherBrowsers = () => (WINDOWS ? windows.browsers() : Object.keys(nativeHostDirs())).filter((browser) => !NOT_BY_DEFAULT.has(browser) && hasApp(browser));
+const SUPPORTED = WINDOWS ? ['brave', 'edge'] : ['brave', 'edge', 'dia'];
+
+/** All the browsers this system has a place to register with. */
+const knownBrowsers = () => (WINDOWS ? windows.browsers() : Object.keys(nativeHostDirs()));
+
+/**
+ * The other Chromium browsers setup registers the bridge with, besides Chrome, so the extension
+ * from the Chrome Web Store works in whichever of them the user adds it to: the supported ones, and
+ * the other Chrome channels and Chromium when they're installed. A browser's folder is no sign it's
+ * installed: other apps' helpers (password managers, agents) create one for every Chromium browser.
+ */
+const otherBrowsers = () => knownBrowsers().filter((browser) => !NOT_BY_DEFAULT.has(browser) && (SUPPORTED.includes(browser) || hasApp(browser)));
 
 /** Has Chrome reload the extension, which also restarts the bridge, and waits for it to come back. */
 async function reloadExtension() {
@@ -170,7 +182,180 @@ async function waitForChrome(timeoutMs) {
   return false;
 }
 
-export async function setup({ harnesses: keys, yes = false, wait = true, browser: browserGiven, log = console.log } = {}) {
+/** How many copies of the extension the bridge knows of: each Chrome profile or browser it's in. */
+const connectedCount = (extension) => (extension ? (extension.known ? 1 + (extension.others?.length ?? 0) : 1) : 0);
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/**
+ * Setup for a person at a terminal: the livery (see livery.mjs) and three steps, the helper, the
+ * agents and the browsers, the last two as lists to tick. With dryRun it shows all of it and
+ * changes nothing: no install, no agent settings, no Store pages.
+ */
+async function setupLive({ keys, browserGiven, dryRun }) {
+  const t = new Terminal();
+  const out = (...lines) => {
+    for (const line of lines) process.stdout.write(`${t.fit(line)}\n`);
+  };
+  const region = new Region(t);
+  const date = now();
+  const computer = WINDOWS ? 'this computer' : 'this Mac';
+  t.start();
+  try {
+    out('', ...t.header(date, VERSION), '');
+
+    // 1. The helper: no question.
+    const browser = browserGiven ?? 'chrome';
+    const others = browserGiven ? [] : otherBrowsers();
+    if (!dryRun) await install({ browser: [browser, ...others] });
+    out(...t.done(1, 'Helper', `${dryRun ? 'would install in' : 'installed in'} ${tilde(installDir())}`));
+
+    // 2. The agents: every one found starts ticked; unticking one that has Tabhand takes it out.
+    const launcher = launcherPath();
+    const found = pickHarnesses(keys);
+    const before = new Map(found.map((harness) => [harness, harnessStatus(harness, launcher)]));
+    const has = (harness) => ['set up', 'outdated'].includes(before.get(harness));
+    let ticks = found.map(() => true);
+    if (!keys && found.length) {
+      ticks = await pick(region, found.map((harness) => ({ on: true, harness })), ({ items, cursor }) => [
+        t.rule(),
+        ` ${t.number(2)}  ${t.bold('Agents')}`,
+        `    Which agents should use your browser? ${t.italic(`Found ${found.length} on ${computer}.`)}`,
+        '',
+        ...items.map((item, i) => {
+          const here = i === cursor;
+          const name = item.harness.name.padEnd(22);
+          const note = has(item.harness) ? t.gray(item.on ? 'has Tabhand' : 'untick takes Tabhand out') : '';
+          return `  ${here ? t.coral('›', { bold: true }) : ' '} ${item.on ? t.coral('●') : t.gray('○')} ${here ? t.bold(name) : name}${note}`;
+        }),
+        '',
+        t.gray('    space ticks · a ticks all · enter goes on'),
+        t.rule(),
+        ` ${t.gray('3')}  ${t.gray('Browsers')}`,
+      ]);
+      region.clear();
+    }
+    const added = [];
+    const kept = [];
+    const removed = [];
+    const failed = [];
+    found.forEach((harness, i) => {
+      try {
+        if (ticks[i] && before.get(harness) === 'set up') kept.push(harness);
+        else if (ticks[i]) {
+          if (!dryRun) addTo(harness, launcher);
+          added.push(harness);
+        } else if (has(harness)) {
+          if (!dryRun) removeFrom(harness);
+          removed.push(harness);
+        }
+      } catch (error) {
+        failed.push(`${harness.name}: ${error.message}`);
+      }
+    });
+    const using = found.filter((harness, i) => ticks[i] && !failed.some((line) => line.startsWith(`${harness.name}:`)));
+    const leftAlone = found.filter((harness, i) => !ticks[i] && !removed.includes(harness));
+    out(
+      ...t.done(2, 'Agents', using.length ? using.map((harness) => harness.name).join(', ') : found.length ? 'none ticked' : 'none found', [
+        ...(!found.length ? [t.italic('Add one later: tabhand setup --harness claude,codex')] : []),
+        ...(added.length && dryRun ? [t.italic(`would add Tabhand to ${added.map((harness) => harness.name).join(', ')}`)] : []),
+        ...(removed.length ? [t.italic(`${dryRun ? 'would take Tabhand out of' : 'took Tabhand out of'} ${removed.map((harness) => harness.name).join(', ')}`)] : []),
+        ...(leftAlone.length ? [t.italic(`${leftAlone.map((harness) => harness.name).join(', ')} left alone`)] : []),
+        ...failed.map((line) => t.coral(`✗ ${line}`)),
+      ]),
+    );
+
+    // 3. The browsers: where to add the extension, and each one connecting.
+    let extension = await extensionInfo();
+    if (!dryRun && extension && (!extension.known || extension.bridgeVersion !== VERSION)) extension = (await reloadExtension()) ?? extension;
+    if (!dryRun && extension?.known && !extension.store && extension.version !== VERSION) extension = (await reloadExtension()) ?? extension;
+    const connected = connectedCount(extension);
+    const list = (browserGiven ? [browserGiven] : ['chrome', ...SUPPORTED]).filter(hasApp);
+    const unsupported = !browserGiven && hasApp('arc') ? ['arc'] : [];
+    let chosen = [];
+    if (list.length) {
+      const firstTicks = connected ? [] : [list[0]];
+      const items = [...list.map((name) => ({ name, on: firstTicks.includes(name) })), ...unsupported.map((name) => ({ name, disabled: true }))];
+      const tickedAt = await pick(region, items, ({ items: rows, cursor }) => [
+        t.rule(),
+        ` ${t.number(3)}  ${t.bold('Browsers')}`,
+        `    Which browsers should agents work in? ${t.italic(connected ? `Tabhand is in ${plural(connected, 'profile')} already.` : 'Tick one to add the extension there.')}`,
+        '',
+        ...rows.map((row, i) => {
+          if (row.disabled) return `      ${t.gray(browserName(row.name).padEnd(12))}${t.gray('isn’t supported')}`;
+          const here = i === cursor;
+          const name = browserName(row.name).padEnd(12);
+          return `  ${here ? t.coral('›', { bold: true }) : ' '} ${row.on ? t.coral('●') : t.gray('○')} ${here ? t.bold(name) : name}${row.on ? t.gray(dryRun ? 'would open the Chrome Web Store here' : 'opens the Chrome Web Store here') : ''}`;
+        }),
+        '',
+        t.gray(`    space ticks · enter ${connected ? 'goes on' : 'opens the Store'}`),
+      ]);
+      region.clear();
+      chosen = list.filter((_, i) => tickedAt[i]);
+    }
+
+    let now_ = connected;
+    if (chosen.length && !dryRun) {
+      if (fromCheckout) {
+        const folder = installedExtensionDir();
+        out(
+          t.gray('    This is a checkout, so load the extension by hand:'),
+          t.gray('    1. Open chrome://extensions and turn on Developer mode.'),
+          t.gray(`    2. Click "Load unpacked" and pick ${folder}`),
+        );
+      } else for (const name of chosen) openInBrowser(name, STORE_URL);
+      const names = chosen.map(browserName);
+      const how = await waitFor(
+        region,
+        (spinner) => [
+          '',
+          ...chosen.map((name) => `    ${t.coral('●')} ${browserName(name).padEnd(12)}${t.gray(fromCheckout ? 'load the extension there' : 'opened the Chrome Web Store · add Tabhand there')}`),
+          '',
+          `    ${t.coral(spinner)} ${t.gray(`Waiting for the extension. Enter finishes; ${listNames(names, 'and')} can connect later on ${names.length === 1 ? 'its' : 'their'} own.`)}`,
+        ],
+        async () => {
+          now_ = connectedCount(await extensionInfo());
+          return now_ >= connected + chosen.length;
+        },
+      );
+      region.clear();
+      extension = (await extensionInfo()) ?? extension;
+      now_ = connectedCount(extension);
+      const waiting = Math.max(0, connected + chosen.length - now_);
+      out(
+        ...t.done(3, 'Browsers', now_ ? `connected in ${plural(now_, 'profile')}${extension?.profile?.name ? `, including "${extension.profile.name}"` : ''}` : 'not connected yet', [
+          ...(waiting ? [t.italic(`${waiting === chosen.length ? listNames(names, 'and') : 'The rest'} connect${waiting === 1 && chosen.length === 1 ? 's' : ''} on ${waiting === 1 ? 'its' : 'their'} own once you add the extension${how === 'timeout' ? ' (stopped waiting after 5 minutes)' : ''}`)] : []),
+        ]),
+      );
+    } else {
+      out(
+        ...t.done(3, 'Browsers', connected ? `connected in ${plural(connected, 'profile')}` : list.length ? 'none ticked' : 'no supported browser found', [
+          ...(dryRun && chosen.length ? [t.italic(`would open the Chrome Web Store in ${listNames(chosen.map(browserName), 'and')}`)] : []),
+          ...(!connected && !chosen.length ? [t.italic(`Add the extension when you're ready: ${STORE_URL}`)] : []),
+        ]),
+      );
+    }
+    if (extension && !dryRun) adviseOnCopies(extension, (line) => out(...line.split('\n').map((part) => `    ${t.gray(part)}`)));
+
+    // The end, as the toolbar panel opens.
+    out('', ...t.ending(date, now_ ? ['Agents are', 'ready.'] : ['One more', 'step.']), '');
+    if (!now_) out(t.gray(' Add the extension, and it connects on its own.'));
+    if (added.length && !dryRun) out(t.gray(' Sessions that were already open pick it up after a restart.'));
+    if (dryRun) out(t.gray(' Dry run: nothing was changed.'));
+  } catch (error) {
+    region.clear();
+    if (!(error instanceof Interrupted)) throw error;
+    out('', t.gray(' Stopped. Nothing after this point was changed.'));
+    process.exitCode = 130;
+  } finally {
+    t.stop();
+  }
+}
+
+export async function setup({ harnesses: keys, yes = false, wait = true, browser: browserGiven, dryRun = false, log = console.log } = {}) {
+  // A person at a terminal gets the livery and the lists to tick; agents, scripts and --yes get
+  // the plain lines below.
+  if (!yes && wait && log === console.log && process.stdin.isTTY && process.stdout.isTTY) return setupLive({ keys, browserGiven, dryRun });
+  if (dryRun) throw new Error('--dry-run shows the setup you get in a terminal, so run it in one (and without --yes or --no-wait).');
   const browser = browserGiven ?? 'chrome';
   const chosen = pickHarnesses(keys);
   log(`Tabhand ${VERSION}\n`);
@@ -220,20 +405,24 @@ export async function setup({ harnesses: keys, yes = false, wait = true, browser
     adviseOnCopies(extension, log);
   } else if (fromCheckout) {
     const folder = installedExtensionDir();
-    if (WINDOWS) windows.copyToClipboard(folder);
-    else try {
+    // Only for a person at a terminal: tests and agents run setup too, and the clipboard is the
+    // user's (a VM can even share it with the Mac around it).
+    const clip = Boolean(process.stdout.isTTY);
+    if (clip && WINDOWS) windows.copyToClipboard(folder);
+    else if (clip) try {
       execFileSync('pbcopy', { input: folder });
     } catch {}
     log(`
 One last step: load the extension in Chrome (once).
   1. Open chrome://extensions and turn on Developer mode (top right).
-  2. Click "Load unpacked", ${WINDOWS ? windows.PICK_FOLDER : 'press ⌘⇧G and paste this folder'} (it's on your clipboard):
+  2. Click "Load unpacked", ${WINDOWS ? windows.PICK_FOLDER : 'press ⌘⇧G and paste this folder'}${clip ? " (it's on your clipboard)" : ''}:
      ${folder}`);
     if (!wait) return;
     log('\nWaiting for Chrome…');
     log((await waitForChrome(5 * 60_000)) ? '✓ Chrome extension connected. All set.' : 'Not connected yet. Check with `tabhand status` once the extension is loaded.');
   } else {
-    const elsewhere = others.map(browserName);
+    // Name only the browsers that are here; the others are registered for when they are.
+    const elsewhere = others.filter(hasApp).map(browserName);
     log(`
 One last step: add the Tabhand extension to ${browserName(browser)}${elsewhere.length ? ` (or ${listNames(elsewhere, 'or')})` : ''}. Opening it in the Chrome Web Store:
   ${STORE_URL}

@@ -11,8 +11,9 @@ import { BridgeClient, OLD_BRIDGE } from './bridge-client.mjs';
 import { detectHarness } from './harness.mjs';
 import { cursorLook } from './settings.mjs';
 import { VERSION } from './version.mjs';
+import { narrowSnapshot } from '../extension/snapshot.js';
 
-const tabLine = ({ tabId, title, url, profile }) => `Tab ${tabId}: ${title || '(untitled)'} — ${url}${profile ? ` (in ${profile})` : ''}`;
+const tabLine = ({ tabId, title, url, profile }) => `Tab ${tabId}: ${title || '(untitled)'} — ${url || '(nothing loaded yet)'}${profile ? ` (in ${profile})` : ''}`;
 const STATES = {
   on: 'on',
   paused: 'paused by the user',
@@ -29,6 +30,14 @@ const profileLine = (p) =>
       ? `. Your new tabs open here${p.chosen ? ' (you chose it)' : ''}.`
       : '.');
 const text = (value) => ({ content: [{ type: 'text', text: value }] });
+/** For a page handed back before it finished loading (GitHub issue #1). */
+const loadingNote = (result) =>
+  result.loading
+    ? `\nThe page${result.requested ? ` (${result.requested})` : ''} is still loading. browser_snapshot reads what has arrived so far; take another in a few seconds.`
+    : '';
+/** Tabhand in Chrome older than this MCP server, which doesn't know a command yet. */
+const newerExtension = (what) =>
+  `${what} needs Tabhand ${VERSION} in Chrome, and Chrome has an older one. Chrome updates it from the Chrome Web Store on its own within a day; the user can update it now at chrome://extensions (Developer mode, then Update).`;
 const navigatedNote = (result) =>
   (result.chose ? `\nChose "${result.chose}" in the dropdown.` : '') +
   (result.notes?.length ? `\n${result.notes.join('\n')}` : '') +
@@ -48,9 +57,10 @@ Use it whenever a task needs a real browser: pages behind a login (email, dashbo
 
 How it works:
 - browser_open_tab opens a tab in your own tab group; you can only reach tabs you opened and tabs those pages open.
-- browser_snapshot reads the page and labels what you can act on with refs like e12; browser_click, browser_type, browser_hover and browser_drag take those refs. Take a new snapshot after the page changes. If something you can see has no ref, browser_click, browser_hover and browser_drag can take its text instead.
+- browser_snapshot reads the page and labels what you can act on with refs like e12; browser_click, browser_type, browser_hover and browser_drag take those refs. Take a new snapshot after the page changes. On long pages, pass find to read just the part you need, or interactiveOnly for only what you can act on. If something you can see has no ref, browser_click, browser_hover and browser_drag can take its text instead.
 - Controls that only appear while the pointer is over something: browser_hover it, and the snapshot it returns shows them. To reorder or move things, browser_drag one onto another.
 - Prefer snapshots for reading; use browser_screenshot to check visuals.
+- If a page may be showing stale data (it changed elsewhere, through an API, a database or another session), browser_reload it.
 - Close your tabs with browser_close_tab when you're done.
 - The user may have Tabhand in several Chrome profiles (say, work and personal), each signed in to different accounts. When they mention one, or a tool says Tabhand is paused, call browser_list_profiles, then pass the profile to browser_open_tab. If it's unclear which profile they mean, ask them.
 
@@ -113,7 +123,10 @@ export async function runMcpServer({ label, theme } = {}) {
     },
     async ({ url, profile }) => {
       const wanted = profile?.trim();
-      if (!wanted) return text(tabLine(await call('open_tab', { url })));
+      if (!wanted) {
+        const result = await call('open_tab', { url });
+        return text(tabLine(result) + loadingNote(result));
+      }
       await needProfiles();
       // The choice is told to the bridge again whenever this reconnects, so it holds if the bridge
       // moves to another profile: by the profile's id once known, since names can change.
@@ -122,7 +135,7 @@ export async function runMcpServer({ label, theme } = {}) {
       try {
         const result = await call('open_tab', { url, profile: wanted });
         if (result.profileId) bridge.profile = result.profileId;
-        return text(tabLine(result));
+        return text(tabLine(result) + loadingNote(result));
       } catch (error) {
         // Nothing was chosen if no profile matched. (One that's paused is still chosen.)
         if (/^(No Chrome profile|More than one Chrome profile)/.test(error.message)) bridge.profile = before;
@@ -152,21 +165,46 @@ export async function runMcpServer({ label, theme } = {}) {
 
   tool(
     'browser_navigate',
-    'Load a URL in one of this session\'s tabs and wait for it to finish loading.',
+    'Load a URL in one of this session\'s tabs and wait for it to finish loading (15 seconds at most: a slower page is handed back still loading).',
     { tabId, url: z.string().describe('Page to load.') },
     async (args) => {
       const result = await call('navigate', args);
-      return text(tabLine(result) + navigatedNote(result));
+      return text(tabLine(result) + navigatedNote(result) + loadingNote(result));
+    },
+  );
+
+  tool(
+    'browser_reload',
+    "Reload one of this session's tabs, to get fresh data after something changed elsewhere (through an API, a database or another session). ignoreCache skips the browser's cache, like a hard reload.",
+    { tabId, ignoreCache: z.boolean().optional().describe('Skip the browser cache, like a hard reload (Shift+Reload).') },
+    async (args) => {
+      try {
+        const result = await call('reload', args);
+        return text(tabLine(result) + loadingNote(result));
+      } catch (error) {
+        if (/Unknown command/.test(error.message)) throw new Error(newerExtension('browser_reload'));
+        throw error;
+      }
     },
   );
 
   tool(
     'browser_snapshot',
-    'Read the page as an accessibility outline (headings, text, links, buttons, fields). Elements you can act on carry a ref like e123 for browser_click and browser_type; plain elements the page made clickable show as "clickable". Refs stop working after the page changes, so take a new snapshot then.',
-    { tabId },
+    'Read the page as an accessibility outline (headings, text, links, buttons, fields). Elements you can act on carry a ref like e123 for browser_click and browser_type; plain elements the page made clickable show as "clickable". Refs stop working after the page changes, so take a new snapshot then. On long pages (dashboards, admin lists), pass find or interactiveOnly to read less.',
+    {
+      tabId,
+      find: z
+        .string()
+        .optional()
+        .describe('Only the parts of the page that contain this text (any case), with what they sit in and what they hold, like a table row with its cells and buttons.'),
+      interactiveOnly: z.boolean().optional().describe('Only what you can act on (links, buttons, fields and anything else with a ref), plus the headings, as a flat list.'),
+    },
     async (args) => {
       const result = await call('snapshot', args);
-      return text(`${tabLine(result)}\n\n${result.snapshot}`);
+      let outline = result.snapshot;
+      // An older Tabhand in Chrome sends the whole page, cut at its limit: narrow what came.
+      if ((args.find?.trim() || args.interactiveOnly) && !result.narrowed) outline = narrowSnapshot(outline, { find: args.find?.trim(), interactiveOnly: args.interactiveOnly });
+      return text(`${tabLine(result)}\n\n${outline}`);
     },
     { readOnlyHint: true },
   );
