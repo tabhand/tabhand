@@ -306,6 +306,8 @@ const quietTabs = new Set();
 const drops = new Map();
 /** tabId -> recent automatic re-attaches, to give up on an extension that keeps coming back */
 const reattaches = new Map();
+/** tabId -> recent times Chrome's debugging bar closed on it, to give up on a tab that keeps losing it */
+const cancels = new Map();
 
 async function detachIdleTabs() {
   for (const tabId of attached) {
@@ -360,7 +362,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   else if (method === 'Page.navigatedWithinDocument') state.sameDocument++;
 });
 
-chrome.debugger.onDetach.addListener(async (source, reason) => {
+chrome.debugger.onDetach.addListener((source, reason) => {
   const { tabId } = source;
   if (tabId === undefined) return;
   noteIssue({ kind: 'detached', tabId, reason });
@@ -369,9 +371,11 @@ chrome.debugger.onDetach.addListener(async (source, reason) => {
   loads.delete(tabId);
   cursorWorlds.delete(tabId);
   if (reason === 'canceled_by_user') {
-    // The user clicked "Cancel" on Chrome's debugging bar: treat it as a stop button.
-    await ready;
-    await setPaused(true);
+    // Chrome takes its debugging bar away on its own too, such as when another Chrome profile
+    // attaches Tabhand to a tab, so this is not a stop button: let go of the tab and take it back
+    // at its next step. Pause in the panel is the one stop button.
+    cancels.set(tabId, [...(cancels.get(tabId) ?? []), Date.now()]);
+    void removeCursorWithoutDebugger(tabId);
   } else if (reason === 'target_closed' && sessionOfTab(tabId) && !tooManyReattaches(tabId)) {
     // The tab is still the agent's, so another extension's frame most likely turned up (see
     // pastForeignFrames). Get straight back on, so a page load or step in progress can finish.
@@ -583,6 +587,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   attached.delete(tabId);
   quietTabs.delete(tabId);
   drops.delete(tabId);
+  cancels.delete(tabId);
   cursorPos.delete(tabId);
   badged.delete(tabId);
   await ready;
@@ -609,9 +614,10 @@ async function send(tabId, method, params = {}) {
     const message = String(error?.message ?? error);
     const unsent = message.includes('is not attached');
     if (!unsent && !message.includes('Detached while handling command')) throw error;
-    // The detach event can still be on its way; until it's handled, attach() thinks it's attached.
-    await waitUntil(() => (drops.get(tabId)?.count ?? 0) > dropsBefore || !attached.has(tabId), 2_000);
-    if (drops.get(tabId)?.reason !== 'target_closed' || !sessionOfTab(tabId) || tooManyReattaches(tabId)) throw error;
+    // The detach event can still be on its way, and until it's handled, attach() thinks it's attached.
+    const drop = await dropAfter(tabId, dropsBefore);
+    if (drop?.reason === 'canceled_by_user') throw new Canceled();
+    if (drop?.reason !== 'target_closed' || !sessionOfTab(tabId) || tooManyReattaches(tabId)) throw error;
     await attach(tabId);
     if (!unsent && !repeatable(method, params)) throw new Interrupted();
     return sendNow(tabId, method, params);
@@ -620,6 +626,22 @@ async function send(tabId, method, params = {}) {
 
 const sendNow = (tabId, method, params) =>
   pastForeignFrames(tabId, () => chrome.debugger.sendCommand({ tabId }, method, params));
+
+/** Waits for the drop behind a failed command and returns it, if it arrives. */
+async function dropAfter(tabId, count) {
+  await waitUntil(() => (drops.get(tabId)?.count ?? 0) > count || !attached.has(tabId), 2_000);
+  const drop = drops.get(tabId);
+  return (drop?.count ?? 0) > count ? drop : null;
+}
+
+/** A step cut short because Chrome's debugging bar closed; see onDetach. */
+class Canceled extends Error {
+  constructor() {
+    super(
+      "Chrome's debugging bar was closed, so Tabhand let go of this tab. If the user closed it, ask them before you carry on; otherwise just try again.",
+    );
+  }
+}
 
 /** A step cut short by another extension's frame; it may or may not have gone through. */
 class Interrupted extends Error {
@@ -651,26 +673,46 @@ async function waitUntil(condition, timeoutMs) {
 /** tabId -> attach in progress, so a step and an automatic re-attach don't trip over each other */
 const attaching = new Map();
 
-function attach(tabId) {
-  if (attached.has(tabId)) return Promise.resolve();
+async function attach(tabId) {
+  if (attached.has(tabId)) return;
+  if (tooManyCancels(tabId)) {
+    throw new Error(
+      `Chrome's debugging bar keeps closing on tab ${tabId}, so Tabhand stopped taking it back. Ask the user whether they closed it; if they didn't, try again in a minute.`,
+    );
+  }
   if (!attaching.has(tabId)) attaching.set(tabId, attachNow(tabId).finally(() => attaching.delete(tabId)));
   return attaching.get(tabId);
 }
 
 async function attachNow(tabId) {
+  const dropsBefore = drops.get(tabId)?.count ?? 0;
   try {
     await pastForeignFrames(tabId, () => chrome.debugger.attach({ tabId }, '1.3'));
   } catch (error) {
     if (!String(error?.message ?? error).includes('Another debugger is already attached')) throw error;
   }
   attached.add(tabId);
-  // sendNow, not send: send recovers from drops by attaching, which would wait on this.
-  await sendNow(tabId, 'Page.enable');
-  const { frameTree } = await sendNow(tabId, 'Page.getFrameTree');
-  loads.set(tabId, { mainFrameId: frameTree.frame.id, started: 0, stopped: 0, interactive: 0, sameDocument: 0 });
-  // Pages behave as if focused and keep rendering while the tab stays in the background (except in
-  // quiet tabs, see there).
-  if (!quietTabs.has(tabId)) await sendNow(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
+  try {
+    // sendNow, not send: send recovers from drops by attaching, which would wait on this.
+    await sendNow(tabId, 'Page.enable');
+    const { frameTree } = await sendNow(tabId, 'Page.getFrameTree');
+    loads.set(tabId, { mainFrameId: frameTree.frame.id, started: 0, stopped: 0, interactive: 0, sameDocument: 0 });
+    // Pages behave as if focused and keep rendering while the tab stays in the background (except in
+    // quiet tabs, see there).
+    if (!quietTabs.has(tabId)) await sendNow(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
+  } catch (error) {
+    const drop = await dropAfter(tabId, dropsBefore);
+    if (drop) attached.delete(tabId);
+    if (drop?.reason === 'canceled_by_user') throw new Canceled();
+    throw error;
+  }
+}
+
+/** True once Chrome's debugging bar keeps closing on a tab: time to stop taking it back. */
+function tooManyCancels(tabId) {
+  const recent = (cancels.get(tabId) ?? []).filter((at) => Date.now() - at < 30_000);
+  cancels.set(tabId, recent);
+  return recent.length > 5;
 }
 
 /** True once another extension keeps knocking the debugger off a tab: time to give up on it. */
@@ -869,7 +911,7 @@ async function dismissCursor(tabId) {
   cursorWorlds.delete(tabId);
 }
 
-/** After the user cancels debugging the debugger is gone; remove the overlay another way. */
+/** With the debugging bar closed, Chrome has let go of the debugger: remove the overlay another way. */
 async function removeCursorWithoutDebugger(tabId) {
   badged.delete(tabId);
   try {

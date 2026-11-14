@@ -61,6 +61,7 @@ How it works:
 - Controls that only appear while the pointer is over something: browser_hover it, and the snapshot it returns shows them. To reorder or move things, browser_drag one onto another.
 - Prefer snapshots for reading; use browser_screenshot to check visuals.
 - If a page may be showing stale data (it changed elsewhere, through an API, a database or another session), browser_reload it.
+- If a step says Chrome's debugging bar closed, Tabhand let go of that tab: ask the user whether they closed it, then try again if they say they didn't.
 - Close your tabs with browser_close_tab when you're done.
 - The user may have Tabhand in several Chrome profiles (say, work and personal), each signed in to different accounts. When they mention one, or a tool says Tabhand is paused, call browser_list_profiles, then pass the profile to browser_open_tab. If it's unclear which profile they mean, ask them.
 
