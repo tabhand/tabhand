@@ -362,7 +362,10 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   else if (method === 'Page.navigatedWithinDocument') state.sameDocument++;
 });
 
-chrome.debugger.onDetach.addListener((source, reason) => {
+chrome.debugger.onDetach.addListener(onDebuggerDetach);
+
+/** Chrome has let go of a tab's debugger, for the given reason. */
+function onDebuggerDetach(source, reason) {
   const { tabId } = source;
   if (tabId === undefined) return;
   noteIssue({ kind: 'detached', tabId, reason });
@@ -383,7 +386,7 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     reattaches.get(tabId).push(Date.now());
     attach(tabId).catch(() => {});
   }
-});
+}
 
 // ---------------------------------------------------------------- dialogs
 
@@ -581,7 +584,10 @@ async function takeOpened(tabId) {
   return described;
 }
 
-chrome.tabs.onRemoved.addListener(async (tabId) => {
+chrome.tabs.onRemoved.addListener((tabId) => forgetTab(tabId));
+
+/** Drops everything Tabhand knows about a tab, once it's gone. */
+async function forgetTab(tabId) {
   dialogs.delete(tabId);
   dialogNotes.delete(tabId);
   attached.delete(tabId);
@@ -600,7 +606,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     }
   }
   if (changed) await save();
-});
+}
 
 /** Sends a debugger command, getting past other extensions' frames (see pastForeignFrames). */
 async function send(tabId, method, params = {}) {
@@ -611,9 +617,8 @@ async function send(tabId, method, params = {}) {
     // The debugger got knocked off mid-step: a password manager's menu appeared, most likely
     // because the step before focused a text field. Get back on, then send the command again if
     // it never went out or is harmless to repeat.
-    const message = String(error?.message ?? error);
-    const unsent = message.includes('is not attached');
-    if (!unsent && !message.includes('Detached while handling command')) throw error;
+    const unsent = String(error?.message ?? error).includes('is not attached');
+    if (!unsent && !looksDetached(error)) throw error;
     // The detach event can still be on its way, and until it's handled, attach() thinks it's attached.
     const drop = await dropAfter(tabId, dropsBefore);
     if (drop?.reason === 'canceled_by_user') throw new Canceled();
@@ -626,6 +631,12 @@ async function send(tabId, method, params = {}) {
 
 const sendNow = (tabId, method, params) =>
   pastForeignFrames(tabId, () => chrome.debugger.sendCommand({ tabId }, method, params));
+
+/** True for the errors Chrome gives once it has let go of a tab's debugger. */
+function looksDetached(error) {
+  const message = String(error?.message ?? error);
+  return message.includes('is not attached') || message.includes('Detached while handling command');
+}
 
 /** Waits for the drop behind a failed command and returns it, if it arrives. */
 async function dropAfter(tabId, count) {
@@ -701,10 +712,38 @@ async function attachNow(tabId) {
     // quiet tabs, see there).
     if (!quietTabs.has(tabId)) await sendNow(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
   } catch (error) {
+    // Only a detach leaves a drop behind; any other error (another extension's frame, say) is the
+    // answer, and waiting on a drop would hold it up for nothing.
+    if (!looksDetached(error)) throw error;
     const drop = await dropAfter(tabId, dropsBefore);
     if (drop) attached.delete(tabId);
     if (drop?.reason === 'canceled_by_user') throw new Canceled();
     throw error;
+  }
+}
+
+/**
+ * Attaches to a tab Tabhand has just opened. Chrome can take its debugging bar away the moment a tab
+ * in another profile attaches (see onDebuggerDetach), so one more try gets it back; a bar that
+ * stays down closes the tab, since the agent would have no id to name it by.
+ */
+async function attachForOpen(tabId) {
+  try {
+    await attach(tabId);
+  } catch (error) {
+    if (!(error instanceof Canceled)) {
+      await closeUnopened(tabId);
+      throw error;
+    }
+    try {
+      await attach(tabId);
+    } catch (again) {
+      await closeUnopened(tabId);
+      if (!(again instanceof Canceled)) throw again;
+      throw new Error(
+        `Tab ${tabId} could not be opened: Chrome's debugging bar kept closing while Tabhand attached to it, so the tab was closed. Ask the user whether they closed it, then try again.`,
+      );
+    }
   }
 }
 
@@ -1153,6 +1192,18 @@ async function addToGroup(session, tabId, windowId) {
   }
   session.groupId = await retry(() => chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } }));
   await chrome.tabGroups.update(session.groupId, { title: lookOf(session).label, color: themeOf(session).group });
+}
+
+/** Closes one of the session's tabs the way an agent's close does. */
+async function closeTab(tabId) {
+  await detach(tabId, { keepCursor: true });
+  await chrome.tabs.remove(tabId);
+}
+
+/** Closes a tab Tabhand opened but couldn't hand to the agent, so no tab is left the agent can't name. */
+async function closeUnopened(tabId) {
+  await closeTab(tabId).catch(() => {});
+  await forgetTab(tabId);
 }
 
 async function endSession(sessionId) {
@@ -1901,7 +1952,7 @@ const handlers = {
       await addToGroup(session, tab.id, windowId);
       await save();
     });
-    await timed('attach', () => attach(tab.id));
+    await timed('attach', () => attachForOpen(tab.id));
     const { loading = false } = target ? await timed('load', () => navigate(tab.id, target)) : {};
     // A page still loading would hold the cursor up until it arrives, which can be minutes.
     if (!cursorPresent(tab.id)) {
@@ -2214,6 +2265,18 @@ const handlers = {
     return result.value;
   },
 
+  async simulate_detach(sessionId, _label, { tabId, reason = 'canceled_by_user' }) {
+    // For tests: Chrome for Testing never takes its debugging bar away by itself. An extension's own
+    // detach fires no onDetach, so do what Chrome does when the bar goes: let go, then handle it.
+    await ownedTab(sessionId, tabId, { debug: false });
+    await chrome.debugger.detach({ tabId }).catch((error) => {
+      // Nothing to take away, which is where a step after a close starts from anyway.
+      if (!looksDetached(error)) throw error;
+    });
+    await onDebuggerDetach({ tabId }, String(reason));
+    return { detached: tabId, reason };
+  },
+
   async baseline_timing(_sessionId, _label, { url }) {
     // For tests: load a page in a plain background tab with no debugger, cursor or badge.
     const started = Date.now();
@@ -2264,8 +2327,7 @@ const handlers = {
 
   async close_tab(sessionId, _label, { tabId }) {
     await ownedTab(sessionId, tabId, { debug: false });
-    await detach(tabId, { keepCursor: true });
-    await chrome.tabs.remove(tabId);
+    await closeTab(tabId);
     return { closed: tabId };
   },
 };

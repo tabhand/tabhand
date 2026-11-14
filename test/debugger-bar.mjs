@@ -4,8 +4,8 @@
 // agent session: a tab in the first profile, then a tab in the second, which must stay on and keep
 // working.
 //
-// Chrome for Testing does not take the bar away on its own here, so the detach that started this is
-// not reproduced; what is checked is the result it must leave behind: the profile stays on.
+// Chrome for Testing does not take the bar away on its own here, so this covers the real two-profile
+// case end to end; test/cancel.mjs closes the bar itself and checks what a close must leave behind.
 //
 //   node test/debugger-bar.mjs
 
