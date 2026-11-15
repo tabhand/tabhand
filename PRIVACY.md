@@ -16,7 +16,7 @@ Tabhand is an open-source Chrome extension and command-line tool. It lets AI age
 - Tabhand has no servers. The developer receives none of your data.
 - No analytics, tracking or ads. Nothing is sold or shared.
 - The helper's log on your computer records only when Chrome and agents connect or disconnect. It never records URLs, page content or anything typed.
-- What the extension stores in Chrome is limited to which tabs belong to which agent, and whether you've paused Tabhand, which is cleared when Chrome restarts; and the name you give a Chrome profile, with a random id for it, and the name, color and icon you pick for agents' cursors, which stay until you remove the extension.
+- What the extension stores in Chrome is limited to which tabs belong to which agent, and whether you've paused Tabhand, which is cleared when Chrome restarts; and the name you give a Chrome profile, with a random id for it, and the name, color and icon you pick for agents' cursors, which stay until you remove the extension. An icon of your own is stored as the paths it draws, without the SVG file itself and without scripts, styles or links the file may have had, and a drawing you set with `tabhand cursor` is kept the same way in `~/.tabhand/settings.json`.
 - The profile's name and id go to the helper on your computer, so your agents can tell your Chrome profiles apart.
 
 ## Permissions

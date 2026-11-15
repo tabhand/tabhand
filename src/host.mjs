@@ -14,6 +14,7 @@ import net from 'node:net';
 import { readMessages, writeMessage } from './native-messaging.mjs';
 import { WINDOWS, dataDir, logPath, socketPath, tokenPath } from './paths.mjs';
 import { VERSION } from './version.mjs';
+import { cleanLook } from '../extension/themes.js';
 
 const SESSION_GRACE_MS = Number(process.env.TABHAND_SESSION_GRACE_MS) || 30_000;
 /** How long a session waits for its agent to come back: while its app is still open, or for a
@@ -521,15 +522,7 @@ export async function runHost() {
       client.label = String(message.label ?? 'Agent').replace(/[^\p{L}\p{N} ._-]/gu, '').slice(0, 40) || 'Agent';
       client.theme = /^[a-z]{1,16}$/.test(message.theme) ? message.theme : 'agent';
       // A name, color and icon for this agent's cursor, from `tabhand cursor`. The extension checks them again.
-      const look = message.look ?? {};
-      client.look =
-        typeof look.name === 'string' || typeof look.color === 'string' || typeof look.icon === 'string'
-          ? {
-              name: String(look.name ?? '').slice(0, 24),
-              color: /^#[0-9a-f]{6}$/i.test(look.color) ? look.color : '',
-              icon: /^[a-z]{1,12}$/.test(look.icon) ? look.icon : '',
-            }
-          : undefined;
+      client.look = cleanLook(message.look) ?? undefined;
       client.conversation = typeof message.conversation === 'string' && /^[\w-]{8,100}$/.test(message.conversation) ? message.conversation : null;
       client.parent = Number.isInteger(message.parent) && message.parent > 1 ? message.parent : null;
       client.cwd = typeof message.cwd === 'string' ? message.cwd.slice(0, 1000) : '';

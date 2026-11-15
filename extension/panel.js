@@ -3,18 +3,22 @@
 // state; the panel asks for it while it's open.
 
 import { ICONS, cleanLook, glyphShape, isColor, themeFor } from './themes.js';
+import { parseGlyphSvg } from './glyph-svg.js';
 
 const $ = (id) => document.getElementById(id);
 const SETUP_COMMAND = 'npx tabhand setup';
-// Chrome closes a toolbar popup when it asks for a permission, so asking for the email happens in
-// this same page opened as a small window of its own.
-const inWindow = location.hash === '#name';
+// Chrome closes a toolbar popup when it asks for a permission or opens a file chooser, so both
+// happen in this same page opened as a small window of its own.
+const openedAs = location.hash.slice(1);
+const inWindow = openedAs === 'name' || openedAs === 'cursor';
 
 let state = null;
-let naming = inWindow;
+let naming = openedAs === 'name';
 /** The cursor view (behind the gear): open or not, and the look being tried in it. */
 let looking = false;
-let draft = { mode: 'own', name: '', color: '#e0573c', icon: 'initial' };
+/** "#cursor" opens straight into the cursor view, where the file chooser can't take the page away. */
+let opening = openedAs === 'cursor';
+let draft = { mode: 'own', name: '', color: '#e0573c', icon: 'initial', iconShape: undefined, iconColors: 'one' };
 // A few colors that read well on any page; any other comes from the color picker or as #RRGGBB.
 const SWATCHES = ['#E0573C', '#F97316', '#EAB308', '#16A34A', '#0891B2', '#2563EB', '#7C3AED', '#DB2777', '#1F2937'];
 const ICON_NAMES = { initial: 'First letter of the name', sparkle: 'Sparkle', bolt: 'Bolt', star: 'Star', heart: 'Heart', diamond: 'Diamond', dot: 'Dot', check: 'Check', prompt: 'Prompt', cube: 'Cube', none: 'No icon' };
@@ -194,6 +198,8 @@ const iconSvg = (shape, className) => {
 };
 /** For "no icon": a circle struck through, only in the picker. */
 const NO_ICON = ['g', { fill: 'none', stroke: 'currentColor', 'stroke-width': 1.4, 'stroke-linecap': 'round' }, [['circle', { cx: 8, cy: 8, r: 6 }], ['path', { d: 'M3.8 12.2 L12.2 3.8' }]]];
+/** For an icon of your own: a plus, which opens the file chooser. */
+const PLUS = ['path', { fill: 'none', stroke: 'currentColor', 'stroke-width': 1.7, 'stroke-linecap': 'round', d: 'M8 3.4 V12.6 M3.4 8 H12.6' }];
 
 const colorVars = (element, theme) => {
   for (const [property, value] of Object.entries({ '--pill': theme.pill, '--text': theme.text, '--glyph': theme.glyphColor, '--glow': theme.glow })) element.style.setProperty(property, value);
@@ -222,7 +228,8 @@ function sample(theme, label, x, y) {
   return box;
 }
 
-const customTheme = () => themeFor(draft.color, { icon: draft.icon, label: draft.name || 'Claude' });
+const customTheme = () =>
+  themeFor(draft.color, { icon: draft.icon, label: draft.name || 'Claude', iconShape: draft.iconShape, iconColors: draft.iconColors });
 
 function renderSamples() {
   const samples =
@@ -275,11 +282,56 @@ function renderIcons() {
     });
     return tile;
   });
-  $('icons').replaceChildren(...tiles);
+  $('icons').replaceChildren(...tiles, iconTile(theme));
+  const custom = draft.icon === 'custom' && Boolean(draft.iconShape);
+  $('icon-options').hidden = !custom;
+  for (const button of document.querySelectorAll('#icon-options [data-colors]')) {
+    button.setAttribute('aria-checked', String(button.dataset.colors === (draft.iconColors ?? 'one')));
+  }
+}
+
+/** The tile after the built-in marks: the icon you uploaded, or a plus that starts an upload. */
+function iconTile(theme) {
+  if (draft.iconShape) {
+    const tile = Object.assign(document.createElement('button'), { type: 'button', className: 'icon', title: 'Your own icon' });
+    tile.dataset.icon = 'custom';
+    tile.setAttribute('role', 'radio');
+    tile.setAttribute('aria-checked', String(draft.icon === 'custom'));
+    const custom = themeFor(draft.color, { icon: 'custom', iconShape: draft.iconShape, iconColors: draft.iconColors });
+    colorVars(tile, custom);
+    tile.append(iconSvg(custom.glyphShape));
+    tile.addEventListener('click', () => {
+      draft.icon = 'custom';
+      renderLook();
+    });
+    return tile;
+  }
+  const tile = Object.assign(document.createElement('button'), { type: 'button', className: 'icon add', title: 'Upload your own icon (SVG)' });
+  tile.setAttribute('aria-label', 'Upload your own icon');
+  tile.append(iconSvg(PLUS));
+  tile.addEventListener('click', uploadIcon);
+  return tile;
+}
+
+/**
+ * Chrome closes a toolbar popup as a native file chooser opens, taking the chosen file with it, so
+ * from the popup the plus hands the look being tried to this view in a window of its own, where the
+ * chooser can run.
+ */
+async function uploadIcon() {
+  if (inWindow) {
+    $('icon-file').click();
+    return;
+  }
+  await chrome.storage.session.set({ iconDraft: { ...draft, mode: 'custom' } }).catch(() => {});
+  await chrome.windows
+    .create({ url: `${chrome.runtime.getURL('panel.html')}#cursor`, type: 'popup', width: 300, height: 720, focused: true })
+    .catch(() => {});
+  window.close();
 }
 
 function renderLook() {
-  for (const button of document.querySelectorAll('.seg button')) button.setAttribute('aria-checked', String(button.dataset.mode === draft.mode));
+  for (const button of document.querySelectorAll('.seg button[data-mode]')) button.setAttribute('aria-checked', String(button.dataset.mode === draft.mode));
   $('custom').hidden = draft.mode !== 'custom';
   $('own-note').hidden = draft.mode !== 'own';
   if (document.activeElement !== $('look-hex')) $('look-hex').value = draft.color.toUpperCase();
@@ -293,18 +345,33 @@ function setColor(color) {
   renderLook();
 }
 
-const lookStatus = (message) => {
-  $('look-status').textContent = message;
+const lookStatus = (message, error = false) => {
+  const status = $('look-status');
+  status.textContent = message;
+  status.classList.toggle('error', error);
 };
 
-function startLooking() {
-  const look = state?.look;
-  draft = { mode: look ? 'custom' : 'own', name: look?.name ?? '', color: look?.color ?? '#e0573c', icon: look?.icon ?? 'initial' };
+/**
+ * Opens the cursor view with the look that's saved, or with the one a popup handed over when its
+ * plus sent the user here for an upload.
+ */
+function startLooking(carried) {
+  const base = carried ?? state?.look;
+  // "#cursor" is here for an upload, so it starts with the choices showing even before a look exists.
+  const custom = Boolean(base) || openedAs === 'cursor';
+  draft = {
+    mode: custom ? 'custom' : 'own',
+    name: base?.name ?? '',
+    color: base?.color ?? '#e0573c',
+    icon: base?.icon ?? 'initial',
+    iconShape: base?.iconShape,
+    iconColors: base?.iconColors ?? 'one',
+  };
   looking = true;
   naming = false;
   $('look-name').value = draft.name;
   $('look-save').textContent = 'Save';
-  lookStatus('');
+  lookStatus(openedAs === 'cursor' ? 'Pick your SVG with the + tile. This window stays open while Chrome shows the file chooser.' : '');
   renderLook();
   render();
 }
@@ -315,7 +382,7 @@ function stopLooking() {
 }
 
 $('settings').addEventListener('click', () => (looking ? stopLooking() : startLooking()));
-for (const button of document.querySelectorAll('.seg button')) {
+for (const button of document.querySelectorAll('.seg button[data-mode]')) {
   button.addEventListener('click', () => {
     draft.mode = button.dataset.mode;
     renderLook();
@@ -333,13 +400,47 @@ $('look-hex').addEventListener('input', () => {
   if (isColor(hex)) setColor(hex);
 });
 
+// A file becomes icon data here, once: nothing from it is ever pasted into a page as markup.
+$('icon-file').addEventListener('change', async () => {
+  const [file] = $('icon-file').files ?? [];
+  $('icon-file').value = '';
+  if (!file) return;
+  try {
+    draft.iconShape = parseGlyphSvg(await file.text());
+    draft.icon = 'custom';
+    lookStatus(`“${file.name}” is in. Save to put it on every agent in this profile.`);
+    renderLook();
+  } catch (error) {
+    lookStatus(error.message, true);
+  }
+});
+
+for (const button of document.querySelectorAll('#icon-options [data-colors]')) {
+  button.addEventListener('click', () => {
+    draft.iconColors = button.dataset.colors;
+    renderLook();
+  });
+}
+
+$('icon-remove').addEventListener('click', () => {
+  draft.iconShape = undefined;
+  draft.icon = 'initial';
+  lookStatus('Back to the name’s first letter. Save to keep it.');
+  renderLook();
+});
+
 $('look-save').addEventListener('click', async () => {
-  const look = draft.mode === 'custom' ? cleanLook({ name: draft.name, color: draft.color, icon: draft.icon }) : null;
+  const look =
+    draft.mode === 'custom'
+      ? cleanLook({ name: draft.name, color: draft.color, icon: draft.icon, iconShape: draft.iconShape, iconColors: draft.iconColors })
+      : null;
   if (look) await chrome.storage.local.set({ cursorLook: look });
   else await chrome.storage.local.remove('cursorLook');
   $('look-save').textContent = 'Saved';
   lookStatus(look ? 'Every agent in this profile wears it now, in the tabs it already has open too.' : 'Every agent wears its own look again.');
   setTimeout(() => {
+    // The window that was opened for the upload has done its job.
+    if (inWindow) return window.close();
     stopLooking();
     refresh();
   }, 1300);
@@ -348,6 +449,16 @@ $('look-save').addEventListener('click', async () => {
 async function refresh() {
   try {
     state = await ask({ type: 'panel' });
+    if (opening) {
+      opening = false;
+      const carried = await chrome.storage.session
+        .get('iconDraft')
+        .then((stored) => stored.iconDraft)
+        .catch(() => null);
+      await chrome.storage.session.remove('iconDraft').catch(() => {});
+      startLooking(carried);
+      return;
+    }
     render();
   } catch {}
 }

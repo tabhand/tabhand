@@ -2,6 +2,8 @@
 // the key; anything unknown falls back to `agent`. Arrows are always colored so they can't be
 // mistaken for the user's own (black and white) pointer.
 
+import { cleanGlyphShape, paintGlyphShape } from './glyph-svg.js';
+
 export const THEMES = {
   claude: {
     arrow: ['#F0A07F', '#C4603E'],
@@ -188,12 +190,34 @@ export function glyphShape(theme, label) {
   return GLYPHS[theme.glyph] ?? GLYPHS.orbit;
 }
 
+/** The drawing of an uploaded icon, checked and painted for the tag; null when it doesn't hold up. */
+function customGlyph(shape, colors) {
+  const clean = cleanGlyphShape(shape);
+  return clean ? paintGlyphShape(clean, colors) : null;
+}
+
+/** A short, stable fingerprint of a drawing, so a page redraws the tab when the icon changes. */
+function fingerprint(value) {
+  let hash = 2166136261;
+  for (const char of JSON.stringify(value)) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
 /**
  * A cursor look by its key: an agent's (claude, codex…) or one built from a #rrggbb color. `icon`
- * swaps the name tag's icon for one from ICONS; `label` is the name it shows, for a monogram.
+ * swaps the name tag's icon for one from ICONS, or for an uploaded drawing (`iconShape`, painted
+ * `iconColors`: 'one' or 'own'); `label` is the name it shows, for a monogram.
  */
-export function themeFor(key, { icon, label } = {}) {
+export function themeFor(key, { icon, label, iconShape, iconColors } = {}) {
   const base = isColor(key) ? themeOfColor(key) : { key: THEMES[key] ? key : 'agent', ...(THEMES[key] ?? THEMES.agent) };
+  if (icon === 'custom') {
+    const shape = customGlyph(iconShape, iconColors);
+    // A drawing that fails the allowlist falls back to the agent's own mark.
+    if (shape) return { ...base, glyph: 'custom', glyphShape: shape, key: `${base.key}:custom:${fingerprint(shape)}` };
+  }
   const theme = ICONS.includes(icon) ? { ...base, glyph: icon } : base;
   const glyph = glyphShape(theme, label);
   // The page redraws its cursor when the key changes, so the icon (and a monogram's letter) count.
@@ -203,13 +227,28 @@ export function themeFor(key, { icon, label } = {}) {
 
 /**
  * A cursor look someone chose (in the toolbar panel, or with `tabhand cursor`), cleaned up:
- * { name, color, icon } with any part left out when unset, or null when nothing is set.
+ * `{ name?, color?, icon?, iconShape?, iconColors? }`, any part left out when unset, or null when
+ * nothing is set. `icon` is one of ICONS, or 'custom' with the uploaded drawing as data — the same
+ * element tree the built-in icons use (see GLYPHS) — and `iconColors` says whether that drawing is
+ * drawn in one color ('one', the default) or its own ('own').
+ *
+ * The drawing is re-checked here against the allowlist in glyph-svg.js because a look also comes
+ * from settings.json and chrome.storage, which can be edited by hand; a drawing that fails is
+ * dropped, leaving the name and color.
  */
 export function cleanLook(look) {
   if (!look || typeof look !== 'object') return null;
   const name = typeof look.name === 'string' ? look.name.replace(/[^\p{L}\p{N} ._&'-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 24) : '';
   const color = isColor(look.color) ? look.color.toLowerCase() : '';
-  const icon = ICONS.includes(look.icon) ? look.icon : '';
+  const custom = look.icon === 'custom' ? cleanGlyphShape(look.iconShape) : null;
+  const icon = custom ? 'custom' : ICONS.includes(look.icon) ? look.icon : '';
+  const iconColors = custom ? (look.iconColors === 'own' ? 'own' : 'one') : '';
   if (!name && !color && !icon) return null;
-  return { ...(name && { name }), ...(color && { color }), ...(icon && { icon }) };
+  return {
+    ...(name && { name }),
+    ...(color && { color }),
+    ...(icon && { icon }),
+    ...(custom && { iconShape: custom }),
+    ...(iconColors && { iconColors }),
+  };
 }

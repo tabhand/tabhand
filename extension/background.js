@@ -114,13 +114,13 @@ const lookReady = chrome.storage.local.get('cursorLook').then((stored) => {
 /** How a session's agent shows in its tabs: its cursor's name, theme and icon, and its tab group's. */
 function lookOf(session) {
   const look = chosenLook ?? session?.look ?? {};
-  return { label: look.name || session?.label, theme: look.color || session?.theme, icon: look.icon };
+  return { label: look.name || session?.label, theme: look.color || session?.theme, icon: look.icon, iconShape: look.iconShape, iconColors: look.iconColors };
 }
 
 /** The whole theme a session's cursor, tab icon and tab group wear. */
 function themeOf(session) {
-  const { label, theme, icon } = lookOf(session);
-  return themeFor(theme, { icon, label });
+  const { label, theme, icon, iconShape, iconColors } = lookOf(session);
+  return themeFor(theme, { icon, label, iconShape, iconColors });
 }
 
 /** Puts a new look on every agent's tab group, cursor and tab icon at once. */

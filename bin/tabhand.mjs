@@ -20,11 +20,15 @@ const HELP = `Tabhand: let your AI agents use your own Chrome, in background tab
                                                extension works in one you install later)
   tabhand status    Check the install, the Chrome connection and each agent
   tabhand remove    Take Tabhand out of your agents and off this machine
-  tabhand cursor    Show or set the name and color every agent's cursor uses on this machine
+  tabhand cursor    Show or set the name, color and icon every agent's cursor uses on this machine
                       --name Acme --color '#FF5A1F'   e.g. your team's name and brand color
                       --icon initial                  the name tag's icon: initial (the name's first
                                                       letter), sparkle, bolt, star, heart, diamond,
                                                       dot, check, prompt, cube or none
+                      --icon-file logo.svg            your own icon instead, from an SVG file of up
+                                                      to 8 KB (paths, shapes and colors only)
+                      --keep-colors                   leave that file's colors as they are, instead
+                                                      of drawing it in the tag's one color
                       --reset                         back to each agent's own look
 
   Agents it knows: claude, codex, opencode, cursor, gemini, qwen, vscode, copilot, kiro, amp,
@@ -56,15 +60,21 @@ try {
       break;
     }
     case 'cursor': {
-      const { cursorLook, setCursorLook } = await import('../src/settings.mjs');
+      const { cursorLook, iconShapeFromFile, setCursorLook } = await import('../src/settings.mjs');
       const name = flag('--name');
       const color = flag('--color');
       const icon = flag('--icon');
+      const iconFile = flag('--icon-file');
+      const keepColors = has('--keep-colors');
       const reset = has('--reset');
-      const changing = reset || name !== undefined || color !== undefined || icon !== undefined;
-      const look = changing ? setCursorLook({ name, color, icon, reset }) : cursorLook();
+      if (iconFile !== undefined && icon !== undefined) throw new Error('Give --icon-file or --icon, not both.');
+      if (keepColors && iconFile === undefined) throw new Error('--keep-colors goes with --icon-file logo.svg.');
+      const iconShape = iconFile === undefined ? undefined : iconShapeFromFile(iconFile);
+      const changing = reset || name !== undefined || color !== undefined || icon !== undefined || iconFile !== undefined;
+      const look = changing ? setCursorLook({ name, color, icon, iconShape, iconColors: keepColors ? 'own' : 'one', reset }) : cursorLook();
+      const shown = look?.icon === 'custom' ? 'your own icon' : look?.icon ? `the ${look.icon} icon` : "each agent's own icon";
       const said = look
-        ? `Agents' cursors on this machine show ${look.name ? `"${look.name}"` : "each agent's own name"} in ${look.color ? look.color.toUpperCase() : "each agent's own color"}, with ${look.icon ? `the ${look.icon} icon` : "each agent's own icon"}.`
+        ? `Agents' cursors on this machine show ${look.name ? `"${look.name}"` : "each agent's own name"} in ${look.color ? look.color.toUpperCase() : "each agent's own color"}, with ${shown}.`
         : "Each agent's cursor shows its own name, color and icon.";
       console.log(said);
       if (changing) console.log('New agent sessions use it. Restart an agent to change one that is running.');
