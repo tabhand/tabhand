@@ -150,6 +150,10 @@ for (const [name, markup] of Object.entries(HOSTILE_FILES)) {
   check(`  and the logo beside it still draws`, tree !== null && JSON.stringify(tree).includes(LABEL));
 }
 
+// Keyword attributes take only their listed words, not names an object inherits.
+const inherited = parseGlyphSvg('<svg viewBox="0 0 16 16"><path d="M0 0 L16 16" stroke-linecap="toString" stroke-linejoin="constructor" fill-rule="__proto__"/></svg>');
+check('a keyword attribute keeps only its listed words', !['stroke-linecap', 'stroke-linejoin', 'fill-rule'].some((key) => key in inherited[2][0][1]), JSON.stringify(inherited[2][0][1]));
+
 // ---------------------------------------------------------------- size caps
 const manyPaths = `<svg viewBox="0 0 16 16">${'<path d="M0 0 L1 1"/>'.repeat(220)}</svg>`;
 check('a tree over 200 elements is refused', throws(() => parseGlyphSvg(manyPaths), /more than 200 elements/), `${manyPaths.length} bytes`);

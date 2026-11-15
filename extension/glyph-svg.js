@@ -40,9 +40,9 @@ const NAMED = new Set([
   'silver', 'maroon', 'navy', 'teal', 'aqua', 'lime', 'olive', 'fuchsia', 'magenta', 'cyan', 'brown',
   'gold', 'transparent',
 ]);
-const CAPS = { butt: true, round: true, square: true };
-const JOINS = { miter: true, round: true, bevel: true };
-const RULES = { nonzero: true, evenodd: true };
+const CAPS = new Set(['butt', 'round', 'square']);
+const JOINS = new Set(['miter', 'round', 'bevel']);
+const RULES = new Set(['nonzero', 'evenodd']);
 const DRAWN = new Set(['path', 'circle', 'ellipse', 'rect', 'line', 'polyline', 'polygon']);
 
 /**
@@ -112,9 +112,9 @@ function attributeOf(rawName, rawValue) {
   if (name === 'd') return PATH.test(value) && /\d/.test(value) ? [name, value] : null;
   if (name === 'points') return POINTS.test(value) && /\d/.test(value) ? [name, value] : null;
   if (name === 'transform') return TRANSFORM.test(value) ? [name, value.replace(/\s+/g, ' ').trim()] : null;
-  if (name === 'stroke-linecap') return CAPS[value] ? [name, value] : null;
-  if (name === 'stroke-linejoin') return JOINS[value] ? [name, value] : null;
-  if (name === 'fill-rule' || name === 'clip-rule') return RULES[value] ? [name, value] : null;
+  if (name === 'stroke-linecap') return CAPS.has(value) ? [name, value] : null;
+  if (name === 'stroke-linejoin') return JOINS.has(value) ? [name, value] : null;
+  if (name === 'fill-rule' || name === 'clip-rule') return RULES.has(value) ? [name, value] : null;
   if (name === 'opacity' || name === 'fill-opacity' || name === 'stroke-opacity') {
     return NUMBER_ONLY.test(value) && Number(value) >= 0 && Number(value) <= 1 ? [name, value] : null;
   }
