@@ -293,6 +293,24 @@ const noteIssue = (issue) => {
 };
 /** tabId -> main-frame load counters, used to wait for navigations (including ones a click starts) */
 const loads = new Map();
+/**
+ * tabId -> the refs (DOM backend node ids) its snapshots handed out for the current document, and
+ * that document's loader, to tell on a re-attach whether the page is still the same one. Chrome
+ * gives the same ids to a new document's elements, so a ref from before would quietly name
+ * whatever has that id now; see refToNodeId.
+ */
+const snapshotRefs = new Map();
+
+/** Drops a tab's refs: its document changed, or it's gone. */
+const forgetRefs = (tabId) => snapshotRefs.delete(tabId);
+
+/** Adds the refs an outline gives the agent to its tab's set for the document with this loader. */
+function rememberRefs(tabId, loaderId, outline) {
+  let entry = snapshotRefs.get(tabId);
+  if (entry?.loaderId !== loaderId) snapshotRefs.set(tabId, (entry = { loaderId, refs: new Set() }));
+  for (const [, id] of outline.matchAll(/\[ref=e(\d+)\]/g)) entry.refs.add(Number(id));
+}
+
 /** tabId -> last time an agent used it. Idle tabs are detached so Chrome's debugging bar goes away. */
 const lastUsed = new Map();
 const IDLE_DETACH_MS = 2 * 60_000;
@@ -354,6 +372,13 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!state) return;
   if (method === 'Page.domContentEventFired') {
     state.interactive = state.started;
+    return;
+  }
+  // A committed document has a loader of its own. A route change keeps the loader, and its elements.
+  if (method === 'Page.frameNavigated') {
+    if (params?.frame?.id !== state.mainFrameId) return;
+    if (params.frame.loaderId !== state.loaderId) forgetRefs(source.tabId);
+    state.loaderId = params.frame.loaderId;
     return;
   }
   if (params?.frameId !== state.mainFrameId) return;
@@ -596,6 +621,7 @@ async function forgetTab(tabId) {
   cancels.delete(tabId);
   cursorPos.delete(tabId);
   badged.delete(tabId);
+  forgetRefs(tabId);
   await ready;
   let changed = false;
   for (const session of Object.values(sessions)) {
@@ -707,7 +733,19 @@ async function attachNow(tabId) {
     // sendNow, not send: send recovers from drops by attaching, which would wait on this.
     await sendNow(tabId, 'Page.enable');
     const { frameTree } = await sendNow(tabId, 'Page.getFrameTree');
-    loads.set(tabId, { mainFrameId: frameTree.frame.id, started: 0, stopped: 0, interactive: 0, sameDocument: 0 });
+    const loaderId = frameTree.frame.loaderId;
+    // Off the tab, a navigation can go unseen. The loader says whether this is another document now:
+    // refs for the last one would act on the wrong elements, so they go. A missing loader clears too.
+    const refs = snapshotRefs.get(tabId);
+    if (refs && (!loaderId || refs.loaderId !== loaderId)) forgetRefs(tabId);
+    loads.set(tabId, {
+      mainFrameId: frameTree.frame.id,
+      loaderId,
+      started: 0,
+      stopped: 0,
+      interactive: 0,
+      sameDocument: 0,
+    });
     // Pages behave as if focused and keep rendering while the tab stays in the background (except in
     // quiet tabs, see there).
     if (!quietTabs.has(tabId)) await sendNow(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true });
@@ -1397,7 +1435,7 @@ async function targetElement(tabId, { ref, text }, verb, notes) {
     if (found.count > 1) notes.push(`${found.count} elements show "${text}"; this ${verb} the first. To use another, give more of its text, or its ref from browser_snapshot.`);
     return found.backendNodeId;
   }
-  return refToNodeId(ref);
+  return refToNodeId(tabId, ref);
 }
 
 /** What to call an element when telling the agent about it: its label, or the text it shows. */
@@ -1739,10 +1777,16 @@ async function hasFocus(tabId, backendNodeId) {
   }
 }
 
-function refToNodeId(ref) {
+function refToNodeId(tabId, ref) {
   const match = /^e(\d+)$/.exec(String(ref ?? '').trim());
   if (!match) throw new Error(`"${ref}" is not a ref from browser_snapshot (they look like e123).`);
-  return Number(match[1]);
+  const nodeId = Number(match[1]);
+  if (!snapshotRefs.get(tabId)?.refs.has(nodeId)) {
+    throw new Error(
+      `"${ref}" isn't from a snapshot of this page (the page changed, or it came from another tab). Take a new browser_snapshot and use a ref from it.`,
+    );
+  }
+  return nodeId;
 }
 
 /**
@@ -1923,8 +1967,13 @@ const PAGE_TIMING = `(() => {
 })()`;
 
 async function takeSnapshot(tabId, narrow = {}) {
+  const page = loads.get(tabId);
+  const loaderId = page?.loaderId;
   const { nodes } = await send(tabId, 'Accessibility.getFullAXTree');
-  return renderSnapshot(nodes, await pointerElements(tabId), narrow);
+  const outline = renderSnapshot(nodes, await pointerElements(tabId), narrow);
+  // Reading takes a round trip or two: if the page changed meanwhile, these refs are another document's.
+  if (page && loads.get(tabId) === page && page.loaderId === loaderId) rememberRefs(tabId, loaderId, outline);
+  return outline;
 }
 
 const handlers = {
@@ -2097,7 +2146,7 @@ const handlers = {
     uploads.delete(uploadId);
     if (upload && upload.sessionId !== sessionId) throw new Error('Unknown upload.');
     await ownedTab(sessionId, tabId);
-    const backendNodeId = refToNodeId(ref);
+    const backendNodeId = refToNodeId(tabId, ref);
     const settle = watchNavigation(tabId);
     // A file field takes the files directly. Anything else is a button that opens a file picker:
     // click it with the picker intercepted (no system dialog) and use the field it was for.
@@ -2118,7 +2167,7 @@ const handlers = {
     await ownedTab(sessionId, tabId);
     const settle = watchNavigation(tabId);
     if (ref !== undefined && ref !== null && ref !== '') {
-      const backendNodeId = refToNodeId(ref);
+      const backendNodeId = refToNodeId(tabId, ref);
       const { node } = await send(tabId, 'DOM.describeNode', { backendNodeId }).catch(() => ({ node: {} }));
       if (node.nodeName === 'SELECT') await cursorOnto(tabId, sessionId, backendNodeId, { click: true });
       const chose = await chooseOption(tabId, backendNodeId, text);

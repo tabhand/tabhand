@@ -57,7 +57,7 @@ Use it whenever a task needs a real browser: pages behind a login (email, dashbo
 
 How it works:
 - browser_open_tab opens a tab in your own tab group; you can only reach tabs you opened and tabs those pages open.
-- browser_snapshot reads the page and labels what you can act on with refs like e12; browser_click, browser_type, browser_hover and browser_drag take those refs. Take a new snapshot after the page changes. On long pages, pass find to read just the part you need, or interactiveOnly for only what you can act on. If something you can see has no ref, browser_click, browser_hover and browser_drag can take its text instead.
+- browser_snapshot reads the page and labels what you can act on with refs like e12; browser_click, browser_type, browser_hover and browser_drag take those refs. A ref only works on the page it came from, so take a new snapshot after the page changes. On long pages, pass find to read just the part you need, or interactiveOnly for only what you can act on. If something you can see has no ref, browser_click, browser_hover and browser_drag can take its text instead.
 - Controls that only appear while the pointer is over something: browser_hover it, and the snapshot it returns shows them. To reorder or move things, browser_drag one onto another.
 - Prefer snapshots for reading; use browser_screenshot to check visuals.
 - If a page may be showing stale data (it changed elsewhere, through an API, a database or another session), browser_reload it.
@@ -191,7 +191,7 @@ export async function runMcpServer({ label, theme } = {}) {
 
   tool(
     'browser_snapshot',
-    'Read the page as an accessibility outline (headings, text, links, buttons, fields). Elements you can act on carry a ref like e123 for browser_click and browser_type; plain elements the page made clickable show as "clickable". Refs stop working after the page changes, so take a new snapshot then. On long pages (dashboards, admin lists), pass find or interactiveOnly to read less.',
+    'Read the page as an accessibility outline (headings, text, links, buttons, fields). Elements you can act on carry a ref like e123 for browser_click and browser_type; plain elements the page made clickable show as "clickable". A ref only works on the page it came from, so take a new snapshot after the page changes. On long pages (dashboards, admin lists), pass find or interactiveOnly to read less.',
     {
       tabId,
       find: z

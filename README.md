@@ -124,7 +124,7 @@ Windows-only code lives in `src/windows.mjs` and `extension/windows.js`. The sha
 | `browser_open_tab` | Open a background tab in the agent's tab group, optionally loading a URL, in the Chrome profile it asks for |
 | `browser_navigate` | Load a URL in one of the session's tabs |
 | `browser_reload` | Reload a tab for fresh data, optionally skipping the cache |
-| `browser_snapshot` | Read the page as an accessibility outline; actionable elements, including ones a page made clickable or draggable out of plain elements, get refs like `e123`. On long pages, `find` reads just the part with some text and `interactiveOnly` just what can be acted on |
+| `browser_snapshot` | Read the page as an accessibility outline; actionable elements, including ones a page made clickable or draggable out of plain elements, get refs like `e123`. A ref only works on the page its snapshot came from, so take a new snapshot after the page changes. On long pages, `find` reads just the part with some text and `interactiveOnly` just what can be acted on |
 | `browser_click` | Click an element by ref, or by the text it shows |
 | `browser_hover` | Move the pointer over an element (by ref or text) to reveal controls that only show on hover, and get a fresh snapshot with refs for them |
 | `browser_drag` | Drag one element onto another, by ref or text: reorder lists, move cards between columns. Works with the browser's own drag and drop and with pages that follow the mouse |
@@ -153,6 +153,7 @@ Windows-only code lives in `src/windows.mjs` and `extension/windows.js`. The sha
 - `node test/cancel.mjs` closes Chrome's debugging bar on an agent's tab, with the extension's test-only `simulate_detach` command, because Chrome for Testing never takes the bar away by itself. It checks that the profile stays on and the tab's next step works, that a step cut short by the close says so, and that a tab which keeps losing the bar is left alone instead of looping.
 - `npm run test:e2e` launches a throwaway Chrome for Testing profile, runs two agents in parallel, and checks they can't reach each other's tabs and that the browser never comes to the front.
 - `node test/new-tabs.mjs` checks that links, `window.open()` and popups from an agent's tab never take over your tab, and that the agent gets the new tab.
+- `node test/stale-refs.mjs` checks that a ref only works on the page its snapshot came from: one from another tab's snapshot, or from before a navigation, is refused without touching the page, while refs keep working across a same-document route change and a narrowed (`find`) snapshot.
 - `node test/drag-hover.mjs` checks, in a background tab, that hover-only buttons (shown by CSS `:hover` or by a `mouseenter` handler) can be reached, and that lists reorder by dragging, with the browser's own HTML5 drag and drop and with mouse events alone, including lists that want a press delay and ones that have to be scrolled while an item is held.
 - `node test/upload.mjs` checks that files reach a page byte for byte, through a file field or a button's file picker, including files over Chrome's 1 MB message cap.
 - `node test/foreign-frames.mjs` checks that an agent gets through pages where a password manager's autofill menu pops up, using a stand-in extension.
