@@ -3,7 +3,7 @@
 // state; the panel asks for it while it's open.
 
 import { ICONS, cleanLook, glyphShape, isColor, themeFor } from './themes.js';
-import { parseGlyphSvg } from './glyph-svg.js';
+import { MAX_ICON_BYTES, parseGlyphSvg } from './glyph-svg.js';
 
 const $ = (id) => document.getElementById(id);
 const SETUP_COMMAND = 'npx tabhand setup';
@@ -405,6 +405,11 @@ $('icon-file').addEventListener('change', async () => {
   const [file] = $('icon-file').files ?? [];
   $('icon-file').value = '';
   if (!file) return;
+  // Refused before reading, so a big file picked by mistake isn't loaded first.
+  if (file.size > MAX_ICON_BYTES) {
+    lookStatus(`That SVG is ${Math.ceil(file.size / 1024)} KB. Tabhand takes icons up to 8 KB, which is more than a 14 px tag can show.`, true);
+    return;
+  }
   try {
     draft.iconShape = parseGlyphSvg(await file.text());
     draft.icon = 'custom';
